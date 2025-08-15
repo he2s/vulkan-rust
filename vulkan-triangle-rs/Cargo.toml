@@ -1,0 +1,9 @@
+[package]
+name = "vulkan_triangle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ash = "0.38"
+ash-window = "0.13"
+winit = "0.29"
