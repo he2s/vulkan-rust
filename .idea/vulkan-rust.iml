@@ -5,9 +5,11 @@
       <sourceFolder url="file://$MODULE_DIR$/vulkan-rust-example/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vulkan-triangle-rs/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vulkan-tutorial-rs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/test/vulkan_test_claude_midi/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/vulkan-rust-example/target" />
       <excludeFolder url="file://$MODULE_DIR$/vulkan-triangle-rs/target" />
       <excludeFolder url="file://$MODULE_DIR$/vulkan-tutorial-rs/target" />
+      <excludeFolder url="file://$MODULE_DIR$/test/vulkan_test_claude_midi/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

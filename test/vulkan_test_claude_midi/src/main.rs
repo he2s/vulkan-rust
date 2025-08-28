@@ -108,7 +108,7 @@ impl Gfx {
                     .iter().enumerate()
                     .find(|(i, q)| {
                         q.queue_flags.contains(vk::QueueFlags::GRAPHICS) &&
-                        surface_loader.get_physical_device_surface_support(pd, *i as u32, surface).unwrap_or(false)
+                            surface_loader.get_physical_device_surface_support(pd, *i as u32, surface).unwrap_or(false)
                     })
                     .map(|(i, _)| (pd, i as u32))
             })
@@ -139,7 +139,7 @@ impl Gfx {
         let swapchain_loader = swapchain::Device::new(&instance, &device);
         let caps = surface_loader.get_physical_device_surface_capabilities(pdev, surface)?;
         let formats = surface_loader.get_physical_device_surface_formats(pdev, surface)?;
-        
+
         let format = formats.iter()
             .find(|f| f.format == vk::Format::B8G8R8A8_SRGB)
             .unwrap_or(&formats[0])
@@ -233,7 +233,7 @@ impl Gfx {
         // Shaders & Pipeline
         let vert_code = Self::compile_shader(include_str!("shaders/fullscreen.vert"), shaderc::ShaderKind::Vertex)?;
         let frag_code = Self::compile_shader(include_str!("shaders/gradient.frag"), shaderc::ShaderKind::Fragment)?;
-        
+
         let vert_module = Self::create_shader_module(&device, &vert_code)?;
         let frag_module = Self::create_shader_module(&device, &frag_code)?;
 
@@ -330,8 +330,8 @@ impl Gfx {
             ..Default::default()
         };
 
-        let pipelines = device.create_graphics_pipelines(vk::PipelineCache::null(), 
-            &[pipeline_info], None).map_err(|e| e.1)?;
+        let pipelines = device.create_graphics_pipelines(vk::PipelineCache::null(),
+                                                         &[pipeline_info], None).map_err(|e| e.1)?;
         let pipeline = pipelines[0];
 
         device.destroy_shader_module(vert_module, None);
@@ -379,7 +379,7 @@ impl Gfx {
             flags: vk::FenceCreateFlags::SIGNALED,
             ..Default::default()
         };
-        
+
         let sync = (
             device.create_semaphore(&sem_info, None)?,
             device.create_semaphore(&sem_info, None)?,
@@ -422,16 +422,16 @@ impl Gfx {
         // Re-record command buffer with updated push constants
         let cb = self.cmd_bufs[image_index as usize];
         self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())?;
-        
+
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }
         }];
-        
+
         let scissor = vk::Rect2D {
             extent: self.extent,
             ..Default::default()
         };
-        
+
         let render_pass_begin = vk::RenderPassBeginInfo {
             render_pass: self.render_pass,
             framebuffer: self.framebuffers[image_index as usize],
@@ -440,10 +440,10 @@ impl Gfx {
             p_clear_values: clear_values.as_ptr(),
             ..Default::default()
         };
-        
+
         self.device.cmd_begin_render_pass(cb, &render_pass_begin, vk::SubpassContents::INLINE);
         self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-        
+
         // Push constants to shader
         self.device.cmd_push_constants(
             cb,
@@ -455,7 +455,7 @@ impl Gfx {
                 std::mem::size_of::<PushConstants>()
             )
         );
-        
+
         self.device.cmd_draw(cb, 3, 1, 0, 0);
         self.device.cmd_end_render_pass(cb);
         self.device.end_command_buffer(cb)?;
@@ -508,7 +508,6 @@ impl Drop for Gfx {
     }
 }
 
-#[derive(Default)]
 struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
@@ -517,6 +516,22 @@ struct App {
     mouse_pressed: bool,
     midi_state: Arc<Mutex<MidiState>>,
     _midi_connection: Option<midir::MidiInputConnection<()>>,
+    midi_setup_attempted: bool, // Add this flag
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            window: None,
+            gfx: None,
+            start_time: None,
+            mouse_pos: (0.0, 0.0),
+            mouse_pressed: false,
+            midi_state: Arc::new(Mutex::new(MidiState::default())),
+            _midi_connection: None,
+            midi_setup_attempted: false,
+        }
+    }
 }
 
 impl App {
@@ -531,38 +546,38 @@ impl App {
             }
         }
     }
-    
+
     fn try_setup_midi(&mut self) -> Result<midir::MidiInputConnection<()>, Box<dyn std::error::Error>> {
         let mut midi_in = MidiInput::new("Vulkan MIDI Visualizer")?;
         midi_in.ignore(Ignore::None);
-        
+
         let in_ports = midi_in.ports();
         if in_ports.is_empty() {
             return Err("No MIDI input ports available".into());
         }
-        
+
         // Auto-select first available port
-        let in_port = &in_ports[1];
+        let in_port = &in_ports[0];
         let port_name = midi_in.port_name(in_port)?;
         println!("Connecting to MIDI port: {}", port_name);
-        
+
         let midi_state = Arc::clone(&self.midi_state);
-        
+
         let connection = midi_in.connect(in_port, "vulkan-visualizer", move |_timestamp, message, _| {
             Self::handle_midi_message(&midi_state, message);
         }, ())?;
-        
+
         Ok(connection)
     }
-    
+
     fn handle_midi_message(midi_state: &Arc<Mutex<MidiState>>, message: &[u8]) {
         if message.is_empty() {
             return;
         }
-        
+
         let mut state = midi_state.lock().unwrap();
         let status = message[0];
-        
+
         match status & 0xF0 {
             0x80 => {
                 // Note Off
@@ -582,7 +597,7 @@ impl App {
                 if message.len() >= 3 {
                     let note = message[1] as usize;
                     let velocity = message[2];
-                    
+
                     if note < 128 {
                         if velocity == 0 {
                             // Velocity 0 = Note Off
@@ -608,7 +623,7 @@ impl App {
                 if message.len() >= 3 {
                     let controller = message[1] as usize;
                     let value = message[2];
-                    
+
                     if controller < 128 {
                         state.controllers[controller] = value as f32 / 127.0;
                         println!("CC{}: {}", controller, value);
@@ -633,24 +648,32 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        println!("Creating window...");
         let window = event_loop.create_window(
             Window::default_attributes()
                 .with_title("Vulkan MIDI Pixel Shader")
                 .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0))
         ).expect("Failed to create window");
-        
+
+        println!("Initializing Vulkan...");
         let gfx = unsafe { Gfx::new(&window).expect("Failed to initialize Vulkan") };
         self.window = Some(window);
         self.gfx = Some(gfx);
         self.start_time = Some(Instant::now());
-        
-        // Initialize MIDI
-        self.setup_midi();
+
+        println!("Window and Vulkan ready, setting up MIDI...");
+        // TEMPORARILY DISABLE MIDI - uncomment next line to test without MIDI
+        // self.setup_midi();
+
+        println!("Setup complete!");
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: winit::window::WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                println!("Close requested");
+                event_loop.exit();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
             }
@@ -660,15 +683,22 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let (Some(gfx), Some(start_time)) = (&self.gfx, &self.start_time) {
                     let elapsed = start_time.elapsed().as_secs_f32();
-                    
-                    // Get current MIDI state
-                    let midi_state = self.midi_state.lock().unwrap();
+
+                    // Get current MIDI state - add error handling
+                    let midi_state = match self.midi_state.lock() {
+                        Ok(state) => state,
+                        Err(e) => {
+                            eprintln!("Failed to lock MIDI state: {}", e);
+                            return;
+                        }
+                    };
+
                     let note_velocity = if midi_state.note_count > 0 {
                         midi_state.notes[midi_state.last_note as usize]
                     } else {
                         0.0
                     };
-                    
+
                     let push_constants = PushConstants {
                         time: elapsed,
                         mouse_x: self.mouse_pos.0 as u32,
@@ -682,9 +712,9 @@ impl ApplicationHandler for App {
                         note_count: midi_state.note_count,
                         last_note: midi_state.last_note as u32,
                     };
-                    
+
                     drop(midi_state); // Release the lock
-                    
+
                     if let Err(e) = unsafe { gfx.draw(&push_constants) } {
                         eprintln!("Draw error: {}", e);
                         event_loop.exit();
@@ -696,15 +726,49 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _: &ActiveEventLoop) {
-        if let Some(window) = &self.window { window.request_redraw(); }
+        // Set up MIDI on first idle callback instead of during window creation
+        if !self.midi_setup_attempted && self.window.is_some() {
+            self.midi_setup_attempted = true;
+            println!("Setting up MIDI on idle...");
+            self.setup_midi();
+        }
+
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 }
 
 fn main() -> Result<()> {
     env_logger::init();
+
+    println!("Creating event loop...");
     let event_loop = EventLoop::new().expect("Failed to create event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait); // Try Wait instead of Poll
+
+    println!("Creating app...");
     let mut app = App::default();
-    event_loop.run_app(&mut app);
+
+    println!("Starting event loop...");
+
+    // Add error handling for Windows
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        event_loop.run_app(&mut app)
+    })) {
+        Ok(result) => match result {
+            Ok(_) => println!("Event loop exited normally"),
+            Err(e) => eprintln!("Event loop error: {:?}", e),
+        },
+        Err(panic) => {
+            eprintln!("Event loop panicked: {:?}", panic);
+            // Try to get more info about the panic
+            if let Some(s) = panic.downcast_ref::<&str>() {
+                eprintln!("Panic message: {}", s);
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                eprintln!("Panic message: {}", s);
+            }
+        }
+    }
+
     Ok(())
 }
