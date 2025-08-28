@@ -2,23 +2,13 @@ use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{ffi::CString, ptr, time::Instant};
+use std::{ffi::CString, ptr};
 use winit::{
     application::ApplicationHandler,
-    event::{WindowEvent, ElementState, MouseButton},
+    event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowAttributes},
 };
-
-// Push constants structure (must match shader layout)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct PushConstants {
-    time: f32,
-    mouse_x: u32,
-    mouse_y: u32,
-    mouse_pressed: u32,
-}
 
 struct Gfx {
     _entry: Entry,
@@ -271,19 +261,8 @@ impl Gfx {
             ..Default::default()
         };
 
-        // Push constants for uniforms
-        let push_constant_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            offset: 0,
-            size: std::mem::size_of::<PushConstants>() as u32,
-        };
-
         let pipeline_layout = device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo {
-                push_constant_range_count: 1,
-                p_push_constant_ranges: &push_constant_range,
-                ..Default::default()
-            }, None
+            &vk::PipelineLayoutCreateInfo::default(), None
         )?;
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo {
@@ -322,10 +301,9 @@ impl Gfx {
         }).collect();
         let framebuffers = framebuffers?;
 
-        // Commands - allocate with RESET flag for re-recording
+        // Commands
         let cmd_pool = device.create_command_pool(
             &vk::CommandPoolCreateInfo {
-                flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
                 queue_family_index: qfi,
                 ..Default::default()
             }, None
@@ -340,8 +318,29 @@ impl Gfx {
             }
         )?;
 
-        // Don't pre-record command buffers - we'll record them each frame
-        // to update push constants
+        // Record command buffers
+        for (i, &cb) in cmd_bufs.iter().enumerate() {
+            device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())?;
+            
+            let clear_values = [vk::ClearValue {
+                color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }
+            }];
+            
+            let render_pass_begin = vk::RenderPassBeginInfo {
+                render_pass,
+                framebuffer: framebuffers[i],
+                render_area: scissor,
+                clear_value_count: clear_values.len() as u32,
+                p_clear_values: clear_values.as_ptr(),
+                ..Default::default()
+            };
+            
+            device.cmd_begin_render_pass(cb, &render_pass_begin, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_draw(cb, 3, 1, 0, 0);
+            device.cmd_end_render_pass(cb);
+            device.end_command_buffer(cb)?;
+        }
 
         // Sync objects
         let sem_info = vk::SemaphoreCreateInfo::default();
@@ -382,53 +381,12 @@ impl Gfx {
         Ok(device.create_shader_module(&create_info, None)?)
     }
 
-    unsafe fn draw(&self, push_constants: &PushConstants) -> Result<()> {
+    unsafe fn draw(&self) -> Result<()> {
         self.device.wait_for_fences(&[self.sync.2], true, u64::MAX)?;
         self.device.reset_fences(&[self.sync.2])?;
 
         let (image_index, _) = self.swapchain_loader
             .acquire_next_image(self.swapchain, u64::MAX, self.sync.0, vk::Fence::null())?;
-
-        // Re-record command buffer with updated push constants
-        let cb = self.cmd_bufs[image_index as usize];
-        self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())?;
-        
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }
-        }];
-        
-        let scissor = vk::Rect2D {
-            extent: self.extent,
-            ..Default::default()
-        };
-        
-        let render_pass_begin = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass,
-            framebuffer: self.framebuffers[image_index as usize],
-            render_area: scissor,
-            clear_value_count: clear_values.len() as u32,
-            p_clear_values: clear_values.as_ptr(),
-            ..Default::default()
-        };
-        
-        self.device.cmd_begin_render_pass(cb, &render_pass_begin, vk::SubpassContents::INLINE);
-        self.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-        
-        // Push constants to shader
-        self.device.cmd_push_constants(
-            cb,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            0,
-            std::slice::from_raw_parts(
-                push_constants as *const PushConstants as *const u8,
-                std::mem::size_of::<PushConstants>()
-            )
-        );
-        
-        self.device.cmd_draw(cb, 3, 1, 0, 0);
-        self.device.cmd_end_render_pass(cb);
-        self.device.end_command_buffer(cb)?;
 
         let submit_info = vk::SubmitInfo {
             wait_semaphore_count: 1,
@@ -482,9 +440,6 @@ impl Drop for Gfx {
 struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
-    start_time: Option<Instant>,
-    mouse_pos: (f64, f64),
-    mouse_pressed: bool,
 }
 
 impl ApplicationHandler for App {
@@ -498,29 +453,14 @@ impl ApplicationHandler for App {
         let gfx = unsafe { Gfx::new(&window).expect("Failed to initialize Vulkan") };
         self.window = Some(window);
         self.gfx = Some(gfx);
-        self.start_time = Some(Instant::now());
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: winit::window::WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_pos = (position.x, position.y);
-            }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                self.mouse_pressed = state == ElementState::Pressed;
-            }
             WindowEvent::RedrawRequested => {
-                if let (Some(gfx), Some(start_time)) = (&self.gfx, &self.start_time) {
-                    let elapsed = start_time.elapsed().as_secs_f32();
-                    let push_constants = PushConstants {
-                        time: elapsed,
-                        mouse_x: self.mouse_pos.0 as u32,
-                        mouse_y: self.mouse_pos.1 as u32,
-                        mouse_pressed: if self.mouse_pressed { 1 } else { 0 },
-                    };
-                    
-                    if let Err(e) = unsafe { gfx.draw(&push_constants) } {
+                if let Some(gfx) = &self.gfx {
+                    if let Err(e) = unsafe { gfx.draw() } {
                         eprintln!("Draw error: {}", e);
                         event_loop.exit();
                     }

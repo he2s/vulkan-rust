@@ -2,13 +2,36 @@ use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{ffi::CString, ptr, time::Instant};
+use std::{ffi::CString, ptr, time::Instant, sync::{Arc, Mutex}};
 use winit::{
     application::ApplicationHandler,
     event::{WindowEvent, ElementState, MouseButton},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowAttributes},
 };
+use midir::{MidiInput, Ignore};
+
+// MIDI state to share between threads
+#[derive(Clone, Debug)]
+struct MidiState {
+    notes: [f32; 128],        // Note velocities (0.0 = off, 0.0-1.0 = on)
+    controllers: [f32; 128],  // CC values (0.0-1.0)
+    pitch_bend: f32,          // Pitch bend (-1.0 to 1.0)
+    last_note: u8,            // Last note played
+    note_count: u32,          // Number of notes currently pressed
+}
+
+impl Default for MidiState {
+    fn default() -> Self {
+        Self {
+            notes: [0.0; 128],
+            controllers: [0.5; 128], // Start CCs at middle position
+            pitch_bend: 0.0,
+            last_note: 60, // Middle C
+            note_count: 0,
+        }
+    }
+}
 
 // Push constants structure (must match shader layout)
 #[repr(C)]
@@ -18,6 +41,13 @@ struct PushConstants {
     mouse_x: u32,
     mouse_y: u32,
     mouse_pressed: u32,
+    // MIDI data
+    note_velocity: f32,       // Velocity of last played note
+    pitch_bend: f32,          // Pitch bend value
+    cc1: f32,                 // Modulation wheel (CC1)
+    cc74: f32,                // Filter cutoff (CC74)
+    note_count: u32,          // Number of notes pressed
+    last_note: u32,           // Last note number
 }
 
 struct Gfx {
@@ -485,13 +515,127 @@ struct App {
     start_time: Option<Instant>,
     mouse_pos: (f64, f64),
     mouse_pressed: bool,
+    midi_state: Arc<Mutex<MidiState>>,
+    _midi_connection: Option<midir::MidiInputConnection<()>>,
+}
+
+impl App {
+    fn setup_midi(&mut self) {
+        match self.try_setup_midi() {
+            Ok(connection) => {
+                self._midi_connection = Some(connection);
+                println!("MIDI input connected successfully!");
+            }
+            Err(e) => {
+                eprintln!("MIDI setup failed: {}. Continuing without MIDI input.", e);
+            }
+        }
+    }
+    
+    fn try_setup_midi(&mut self) -> Result<midir::MidiInputConnection<()>, Box<dyn std::error::Error>> {
+        let mut midi_in = MidiInput::new("Vulkan MIDI Visualizer")?;
+        midi_in.ignore(Ignore::None);
+        
+        let in_ports = midi_in.ports();
+        if in_ports.is_empty() {
+            return Err("No MIDI input ports available".into());
+        }
+        
+        // Auto-select first available port
+        let in_port = &in_ports[1];
+        let port_name = midi_in.port_name(in_port)?;
+        println!("Connecting to MIDI port: {}", port_name);
+        
+        let midi_state = Arc::clone(&self.midi_state);
+        
+        let connection = midi_in.connect(in_port, "vulkan-visualizer", move |_timestamp, message, _| {
+            Self::handle_midi_message(&midi_state, message);
+        }, ())?;
+        
+        Ok(connection)
+    }
+    
+    fn handle_midi_message(midi_state: &Arc<Mutex<MidiState>>, message: &[u8]) {
+        if message.is_empty() {
+            return;
+        }
+        
+        let mut state = midi_state.lock().unwrap();
+        let status = message[0];
+        
+        match status & 0xF0 {
+            0x80 => {
+                // Note Off
+                if message.len() >= 3 {
+                    let note = message[1] as usize;
+                    if note < 128 {
+                        if state.notes[note] > 0.0 {
+                            state.note_count = state.note_count.saturating_sub(1);
+                        }
+                        state.notes[note] = 0.0;
+                        println!("Note Off: {} (Count: {})", note, state.note_count);
+                    }
+                }
+            }
+            0x90 => {
+                // Note On
+                if message.len() >= 3 {
+                    let note = message[1] as usize;
+                    let velocity = message[2];
+                    
+                    if note < 128 {
+                        if velocity == 0 {
+                            // Velocity 0 = Note Off
+                            if state.notes[note] > 0.0 {
+                                state.note_count = state.note_count.saturating_sub(1);
+                            }
+                            state.notes[note] = 0.0;
+                            println!("Note Off: {} (Count: {})", note, state.note_count);
+                        } else {
+                            // Note On
+                            if state.notes[note] == 0.0 {
+                                state.note_count += 1;
+                            }
+                            state.notes[note] = velocity as f32 / 127.0;
+                            state.last_note = note as u8;
+                            println!("Note On: {} Velocity: {} (Count: {})", note, velocity, state.note_count);
+                        }
+                    }
+                }
+            }
+            0xB0 => {
+                // Control Change
+                if message.len() >= 3 {
+                    let controller = message[1] as usize;
+                    let value = message[2];
+                    
+                    if controller < 128 {
+                        state.controllers[controller] = value as f32 / 127.0;
+                        println!("CC{}: {}", controller, value);
+                    }
+                }
+            }
+            0xE0 => {
+                // Pitch Bend
+                if message.len() >= 3 {
+                    let bend_value = (message[2] as u16) << 7 | (message[1] as u16);
+                    // Convert from 0-16383 to -1.0 to 1.0
+                    state.pitch_bend = (bend_value as f32 / 8192.0) - 1.0;
+                    println!("Pitch Bend: {:.3}", state.pitch_bend);
+                }
+            }
+            _ => {
+                // Ignore other MIDI messages for now
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = event_loop.create_window(
             Window::default_attributes()
-                .with_title("Vulkan Pixel Shader")
+                .with_title("Vulkan MIDI Pixel Shader")
                 .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0))
         ).expect("Failed to create window");
         
@@ -499,6 +643,9 @@ impl ApplicationHandler for App {
         self.window = Some(window);
         self.gfx = Some(gfx);
         self.start_time = Some(Instant::now());
+        
+        // Initialize MIDI
+        self.setup_midi();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: winit::window::WindowId, event: WindowEvent) {
@@ -513,12 +660,30 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let (Some(gfx), Some(start_time)) = (&self.gfx, &self.start_time) {
                     let elapsed = start_time.elapsed().as_secs_f32();
+                    
+                    // Get current MIDI state
+                    let midi_state = self.midi_state.lock().unwrap();
+                    let note_velocity = if midi_state.note_count > 0 {
+                        midi_state.notes[midi_state.last_note as usize]
+                    } else {
+                        0.0
+                    };
+                    
                     let push_constants = PushConstants {
                         time: elapsed,
                         mouse_x: self.mouse_pos.0 as u32,
                         mouse_y: self.mouse_pos.1 as u32,
                         mouse_pressed: if self.mouse_pressed { 1 } else { 0 },
+                        // MIDI values
+                        note_velocity,
+                        pitch_bend: midi_state.pitch_bend,
+                        cc1: midi_state.controllers[1],   // Modulation wheel
+                        cc74: midi_state.controllers[74], // Filter cutoff
+                        note_count: midi_state.note_count,
+                        last_note: midi_state.last_note as u32,
                     };
+                    
+                    drop(midi_state); // Release the lock
                     
                     if let Err(e) = unsafe { gfx.draw(&push_constants) } {
                         eprintln!("Draw error: {}", e);
