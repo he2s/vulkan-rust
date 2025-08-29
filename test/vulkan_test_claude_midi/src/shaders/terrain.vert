@@ -33,9 +33,16 @@ void main() {
     vec2 pos = positions[gl_VertexIndex];
     vec2 uv = uvs[gl_VertexIndex];
 
-    vertexEnergy = pc.note_velocity * 0.8 + pc.cc1 * 0.2;
+    // Simple pass-through with minimal distortion
+    // The main effect will be in the fragment shader
+    float energy = pc.note_velocity * 0.8 + pc.cc1 * 0.2;
+
+    // Subtle breathing effect
+    float breathe = 1.0 + 0.02 * sin(pc.time * 2.0) * energy;
+    pos *= breathe;
 
     gl_Position = vec4(pos, 0.0, 1.0);
     fragUV = uv;
+    vertexEnergy = energy;
     worldPos = vec3(pos, 0.0);
 }
