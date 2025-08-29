@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::ffi::c_char; // <- add this
+use std::ffi::c_char;
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -15,7 +15,7 @@ use midir::{MidiInput, Ignore};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-// NEW: audio imports
+// Audio imports
 use cpal::{traits::{DeviceTrait, HostTrait, StreamTrait}};
 use rustfft::{FftPlanner, num_complex::Complex32};
 
@@ -104,7 +104,6 @@ struct AudioConfig {
     sample_rate: Option<u32>,
 }
 
-// NEW: Shader configuration
 #[derive(Deserialize, Serialize, Clone)]
 struct ShaderConfig {
     #[serde(default = "default_shader_preset")]
@@ -120,10 +119,10 @@ struct ShaderConfig {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum ShaderPreset {
-    Torus,      // Original 4D torus
-    Terrain,    // Organic terrain
-    Crystal,    // Crystalline patterns
-    Custom,     // Use custom paths
+    Torus,
+    Terrain,
+    Crystal,
+    Custom,
 }
 
 fn default_shader_preset() -> ShaderPreset { ShaderPreset::Torus }
@@ -358,7 +357,6 @@ impl Gfx {
         } else {
             vec![]
         };
-        // IMPORTANT: use c_char here, not i8/u8
         let layer_name_pointers: Vec<*const c_char> =
             layer_names.iter().map(|name| name.as_ptr()).collect();
         let (enabled_layer_count, pp_enabled_layer_names) = if layer_name_pointers.is_empty() {
@@ -380,8 +378,8 @@ impl Gfx {
             p_application_info: &app_info,
             enabled_layer_count,
             pp_enabled_layer_names,
-            enabled_extension_count: ext_names.len() as u32,   // ext_names comes from ash_window
-            pp_enabled_extension_names: ext_names.as_ptr(),    // this is already *const *const c_char
+            enabled_extension_count: ext_names.len() as u32,
+            pp_enabled_extension_names: ext_names.as_ptr(),
             ..Default::default()
         };
 
@@ -440,7 +438,10 @@ impl Gfx {
             caps.current_extent
         } else {
             let size = window.inner_size();
-            vk::Extent2D { width: size.width, height: size.height }
+            vk::Extent2D {
+                width: size.width.max(1),
+                height: size.height.max(1)
+            }
         };
 
         let image_count = (caps.min_image_count + 1).min(
@@ -598,6 +599,14 @@ impl Gfx {
             ..Default::default()
         };
 
+        // Add dynamic state for viewport and scissor
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
+            dynamic_state_count: dynamic_states.len() as u32,
+            p_dynamic_states: dynamic_states.as_ptr(),
+            ..Default::default()
+        };
+
         let push_constant_range = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             offset: 0,
@@ -621,6 +630,7 @@ impl Gfx {
             p_rasterization_state: &rasterizer,
             p_multisample_state: &multisampling,
             p_color_blend_state: &color_blending,
+            p_dynamic_state: &dynamic_state_info,  // Add dynamic state
             layout: pipeline_layout,
             render_pass,
             ..Default::default()
@@ -687,6 +697,112 @@ impl Gfx {
             physical_device: pdev,
             queue_family_index: qfi,
         })
+    }
+
+    unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<()> {
+        // Wait for device to be idle before recreating
+        self.device.device_wait_idle()?;
+
+        // Destroy old swapchain resources
+        for &fb in &self.framebuffers {
+            self.device.destroy_framebuffer(fb, None);
+        }
+        for &view in &self.views {
+            self.device.destroy_image_view(view, None);
+        }
+
+        // Get new surface capabilities
+        let caps = self.surface_loader.get_physical_device_surface_capabilities(
+            self.physical_device,
+            self.surface
+        )?;
+        let formats = self.surface_loader.get_physical_device_surface_formats(
+            self.physical_device,
+            self.surface
+        )?;
+
+        let format = formats.iter()
+            .find(|f| f.format == vk::Format::B8G8R8A8_SRGB)
+            .unwrap_or(&formats[0])
+            .format;
+
+        // Get new extent from window size
+        let extent = if caps.current_extent.width != u32::MAX {
+            caps.current_extent
+        } else {
+            let size = window.inner_size();
+            vk::Extent2D {
+                width: size.width.max(1),
+                height: size.height.max(1)
+            }
+        };
+
+        let image_count = (caps.min_image_count + 1).min(
+            if caps.max_image_count > 0 { caps.max_image_count } else { u32::MAX }
+        );
+
+        // Create new swapchain
+        let swapchain_info = vk::SwapchainCreateInfoKHR {
+            surface: self.surface,
+            min_image_count: image_count,
+            image_format: format,
+            image_color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            image_extent: extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
+            pre_transform: caps.current_transform,
+            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+            present_mode: vk::PresentModeKHR::FIFO,
+            clipped: vk::TRUE,
+            old_swapchain: self.swapchain,
+            ..Default::default()
+        };
+
+        let new_swapchain = self.swapchain_loader.create_swapchain(&swapchain_info, None)?;
+
+        // Destroy old swapchain after creating new one
+        self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+        self.swapchain = new_swapchain;
+        self.extent = extent;
+
+        // Get new images
+        let images = self.swapchain_loader.get_swapchain_images(self.swapchain)?;
+
+        // Create new image views
+        self.views = images.iter().map(|&img| {
+            let view_info = vk::ImageViewCreateInfo {
+                image: img,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+            self.device.create_image_view(&view_info, None)
+        }).collect::<Result<Vec<_>, _>>()?;
+
+        // Recreate framebuffers
+        self.framebuffers = self.views.iter().map(|&view| {
+            let fb_info = vk::FramebufferCreateInfo {
+                render_pass: self.render_pass,
+                attachment_count: 1,
+                p_attachments: &view,
+                width: extent.width,
+                height: extent.height,
+                layers: 1,
+                ..Default::default()
+            };
+            self.device.create_framebuffer(&fb_info, None)
+        }).collect::<Result<Vec<_>, _>>()?;
+
+        println!("Swapchain recreated: {}x{}", extent.width, extent.height);
+        Ok(())
     }
 
     unsafe fn recreate_pipeline(&mut self, shader_config: &ShaderConfig) -> Result<()> {
@@ -771,6 +887,14 @@ impl Gfx {
             ..Default::default()
         };
 
+        // Add dynamic state for viewport and scissor
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
+            dynamic_state_count: dynamic_states.len() as u32,
+            p_dynamic_states: dynamic_states.as_ptr(),
+            ..Default::default()
+        };
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo {
             stage_count: stages.len() as u32,
             p_stages: stages.as_ptr(),
@@ -780,6 +904,7 @@ impl Gfx {
             p_rasterization_state: &rasterizer,
             p_multisample_state: &multisampling,
             p_color_blend_state: &color_blending,
+            p_dynamic_state: &dynamic_state_info,
             layout: self.pipeline_layout,
             render_pass: self.render_pass,
             ..Default::default()
@@ -812,12 +937,24 @@ impl Gfx {
         Ok(device.create_shader_module(&create_info, None)?)
     }
 
-    unsafe fn draw(&self, push_constants: &PushConstants) -> Result<()> {
+    unsafe fn draw(&self, push_constants: &PushConstants) -> Result<bool> {
         self.device.wait_for_fences(&[self.sync.2], true, u64::MAX)?;
         self.device.reset_fences(&[self.sync.2])?;
 
-        let (image_index, _) = self.swapchain_loader
-            .acquire_next_image(self.swapchain, u64::MAX, self.sync.0, vk::Fence::null())?;
+        let result = self.swapchain_loader
+            .acquire_next_image(self.swapchain, u64::MAX, self.sync.0, vk::Fence::null());
+
+        let (image_index, is_suboptimal) = match result {
+            Ok((index, suboptimal)) => (index, suboptimal),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                return Ok(true);  // Signal need to recreate swapchain
+            }
+            Err(e) => return Err(anyhow!("Failed to acquire image: {:?}", e)),
+        };
+
+        if is_suboptimal {
+            // Swapchain is suboptimal but still usable
+        }
 
         let mut frame_index = self.frame_index.borrow_mut();
         let current_cmd_buf = self.cmd_bufs[*frame_index % 2];
@@ -845,6 +982,18 @@ impl Gfx {
 
         self.device.cmd_begin_render_pass(current_cmd_buf, &render_pass_begin, vk::SubpassContents::INLINE);
         self.device.cmd_bind_pipeline(current_cmd_buf, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+
+        // Set dynamic viewport and scissor
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.extent.width as f32,
+            height: self.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        self.device.cmd_set_viewport(current_cmd_buf, 0, &[viewport]);
+        self.device.cmd_set_scissor(current_cmd_buf, 0, &[scissor]);
 
         self.device.cmd_push_constants(
             current_cmd_buf,
@@ -883,8 +1032,13 @@ impl Gfx {
             ..Default::default()
         };
 
-        self.swapchain_loader.queue_present(self.queue, &present_info)?;
-        Ok(())
+        match self.swapchain_loader.queue_present(self.queue, &present_info) {
+            Ok(_) => Ok(false),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+                Ok(true)  // Signal need to recreate swapchain
+            }
+            Err(e) => Err(anyhow!("Failed to present: {:?}", e)),
+        }
     }
 }
 
@@ -910,7 +1064,7 @@ impl Drop for Gfx {
     }
 }
 
-// ---- Audio analysis state ----
+// Audio analysis state
 #[derive(Clone, Debug)]
 struct AudioState {
     ring: VecDeque<f32>,
@@ -1312,6 +1466,17 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: winit::window::WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(new_size) => {
+                if new_size.width > 0 && new_size.height > 0 {
+                    println!("Window resized to {}x{}", new_size.width, new_size.height);
+                    if let (Some(gfx), Some(window)) = (&mut self.gfx, &self.window) {
+                        if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                            eprintln!("Failed to recreate swapchain: {}", e);
+                            event_loop.exit();
+                        }
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event: KeyEvent { physical_key, state: ElementState::Pressed, .. }, .. } => {
                 match physical_key {
                     PhysicalKey::Code(KeyCode::F11) => {
@@ -1337,7 +1502,7 @@ impl ApplicationHandler for App {
                 self.mouse_pressed = state == ElementState::Pressed;
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(gfx), Some(start_time)) = (&self.gfx, &self.start_time) {
+                if let (Some(gfx), Some(start_time), Some(window)) = (&mut self.gfx, &self.start_time, &self.window) {
                     let elapsed = start_time.elapsed().as_secs_f32();
 
                     let midi_state = match self.midi_state.lock() {
@@ -1380,9 +1545,22 @@ impl ApplicationHandler for App {
 
                     drop(midi_state);
 
-                    if let Err(e) = unsafe { gfx.draw(&push_constants) } {
-                        eprintln!("Draw error: {}", e);
-                        event_loop.exit();
+                    let result = unsafe { gfx.draw(&push_constants) };
+                    match result {
+                        Ok(true) => {
+                            // Swapchain needs recreation
+                            if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                                eprintln!("Failed to recreate swapchain: {}", e);
+                                event_loop.exit();
+                            }
+                        }
+                        Ok(false) => {
+                            // Draw succeeded normally
+                        }
+                        Err(e) => {
+                            eprintln!("Draw error: {}", e);
+                            event_loop.exit();
+                        }
                     }
                 }
             }
