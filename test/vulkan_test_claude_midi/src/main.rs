@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{ffi::CString, ptr, time::{Instant, Duration}, sync::{Arc, Mutex}, path::Path, fs};
+use std::{ffi::CString, ptr, time::{Instant, Duration}, sync::{Arc, Mutex}, path::Path, fs, collections::VecDeque};
 use winit::{
     application::ApplicationHandler,
     event::{WindowEvent, ElementState, MouseButton, KeyEvent},
@@ -13,6 +13,10 @@ use winit::{
 use midir::{MidiInput, Ignore};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+
+// NEW: audio imports
+use cpal::{traits::{DeviceTrait, HostTrait, StreamTrait}};
+use rustfft::{FftPlanner, num_complex::Complex32};
 
 #[derive(Parser)]
 #[command(name = "vulkan-midi-visualizer")]
@@ -47,6 +51,9 @@ struct Config {
     midi: MidiConfig,
     #[serde(default)]
     graphics: GraphicsConfig,
+    // NEW: audio section
+    #[serde(default)]
+    audio: AudioConfig,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,6 +88,17 @@ struct GraphicsConfig {
     validation_layers: bool,
 }
 
+// NEW: audio config
+#[derive(Deserialize, Serialize)]
+struct AudioConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    device_name: Option<String>,
+    #[serde(default)]
+    sample_rate: Option<u32>,
+}
+
 fn default_width() -> u32 { 800 }
 fn default_height() -> u32 { 600 }
 fn default_title() -> String { "Vulkan MIDI Pixel Shader".to_string() }
@@ -92,6 +110,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             midi: MidiConfig::default(),
             graphics: GraphicsConfig::default(),
+            audio: AudioConfig::default(), // NEW
         }
     }
 }
@@ -123,6 +142,17 @@ impl Default for GraphicsConfig {
         Self {
             vsync: default_true(),
             validation_layers: cfg!(debug_assertions),
+        }
+    }
+}
+
+// NEW: default audio config
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,        // opt-in
+            device_name: None,
+            sample_rate: None,
         }
     }
 }
@@ -186,10 +216,10 @@ struct PushConstants {
     mouse_y: u32,
     mouse_pressed: u32,
     // MIDI data
-    note_velocity: f32,       // Velocity of last played note
-    pitch_bend: f32,          // Pitch bend value
-    cc1: f32,                 // Modulation wheel (CC1)
-    cc74: f32,                // Filter cutoff (CC74)
+    note_velocity: f32,       // Velocity of last played note (we'll map audio RMS here too)
+    pitch_bend: f32,          // Pitch bend value (map low band)
+    cc1: f32,                 // Modulation wheel (CC1) (map mid band)
+    cc74: f32,                // Filter cutoff (CC74) (map high band)
     note_count: u32,          // Number of notes pressed
     last_note: u32,           // Last note number
 }
@@ -674,6 +704,88 @@ impl Drop for Gfx {
     }
 }
 
+// ---- NEW: Very lightweight audio analysis state ----
+
+#[derive(Clone, Debug)]
+struct AudioState {
+    ring: VecDeque<f32>,
+    capacity: usize,
+    last_sample_rate: u32,
+    level_rms: f32,
+    low: f32,
+    mid: f32,
+    high: f32,
+}
+
+impl AudioState {
+    fn new() -> Self {
+        Self {
+            ring: VecDeque::with_capacity(4096),
+            capacity: 4096,
+            last_sample_rate: 48000,
+            level_rms: 0.0,
+            low: 0.0, mid: 0.0, high: 0.0,
+        }
+    }
+
+    fn push_samples(&mut self, samples: &[f32], sr: u32) {
+        self.last_sample_rate = sr;
+        for &s in samples {
+            if self.ring.len() == self.capacity { self.ring.pop_front(); }
+            self.ring.push_back(s);
+        }
+    }
+
+    /// Compute snapshot features (RMS + coarse 3 bands)
+    fn snapshot(&mut self) {
+        let n: usize = 1024;
+        if self.ring.is_empty() {
+            self.level_rms = 0.0; self.low = 0.0; self.mid = 0.0; self.high = 0.0;
+            return;
+        }
+        let take = n.min(self.ring.len());
+        let mut buf: Vec<f32> = self.ring.iter().rev().take(take).cloned().collect();
+        buf.reverse();
+
+        // RMS
+        let rms = (buf.iter().map(|x| x * x).sum::<f32>() / (buf.len() as f32)).sqrt();
+
+        // Hann window + FFT
+        let fft_len = buf.len().next_power_of_two().max(256).min(2048);
+        buf.resize(fft_len, 0.0);
+        for (i, x) in buf.iter_mut().enumerate() {
+            let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (fft_len as f32)).cos());
+            *x *= w as f32;
+        }
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(fft_len);
+        let mut spectrum: Vec<Complex32> = buf.into_iter().map(|v| Complex32::new(v, 0.0)).collect();
+        fft.process(&mut spectrum);
+
+        // Sum magnitudes into 3 coarse bands
+        let sr = self.last_sample_rate as f32;
+        let bin_hz = sr / (fft_len as f32);
+        let mut low = 0.0;   // ~20–250 Hz
+        let mut mid = 0.0;   // ~250–2k Hz
+        let mut high = 0.0;  // ~2k–8k Hz
+        for (i, c) in spectrum.iter().enumerate().take(fft_len/2) {
+            let f = i as f32 * bin_hz;
+            let mag = c.norm();
+            if f < 20.0 { continue; }
+            if f <= 250.0 { low += mag; }
+            else if f <= 2000.0 { mid += mag; }
+            else if f <= 8000.0 { high += mag; }
+        }
+        // Normalize crudely and smooth a bit
+        let norm = |x: f32| (x / 1000.0).min(1.0);
+        let a = 0.7; // smoothing
+        self.level_rms = a * self.level_rms + (1.0 - a) * rms.min(1.0);
+        self.low = a * self.low + (1.0 - a) * norm(low);
+        self.mid = a * self.mid + (1.0 - a) * norm(mid);
+        self.high = a * self.high + (1.0 - a) * norm(high);
+    }
+}
+
 struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
@@ -682,6 +794,9 @@ struct App {
     mouse_pressed: bool,
     midi_state: Arc<Mutex<MidiState>>,
     _midi_connection: Option<midir::MidiInputConnection<()>>,
+    // NEW: audio
+    audio_state: Arc<Mutex<AudioState>>,
+    _audio_stream: Option<cpal::Stream>,
     config: Config,
     is_fullscreen: bool,
 }
@@ -697,6 +812,8 @@ impl App {
             mouse_pressed: false,
             midi_state: Arc::new(Mutex::new(MidiState::default())),
             _midi_connection: None,
+            audio_state: Arc::new(Mutex::new(AudioState::new())),
+            _audio_stream: None,
             config,
             is_fullscreen,
         }
@@ -732,6 +849,89 @@ impl App {
                 eprintln!("MIDI setup failed: {}. Continuing without MIDI input.", e);
             }
         }
+    }
+
+    // NEW: audio setup
+    fn setup_audio(&mut self) {
+        if !self.config.audio.enabled {
+            println!("Audio input disabled in configuration");
+            return;
+        }
+
+        let host = cpal::default_host();
+        let mut device = match &self.config.audio.device_name {
+            Some(substr) => {
+                let dev = host.input_devices().ok()
+                    .and_then(|mut it| it.find(|d| d.name().map(|n| n.contains(substr)).unwrap_or(false)));
+                dev.or_else(|| host.default_input_device())
+            }
+            None => host.default_input_device(),
+        };
+
+        let device = match device.take() {
+            Some(d) => d,
+            None => { eprintln!("No input audio device found"); return; }
+        };
+
+        let supported = match device.supported_input_configs() {
+            Ok(cfgs) => cfgs.collect::<Vec<_>>(),
+            Err(e) => { eprintln!("Failed to query audio formats: {}", e); return; }
+        };
+        if supported.is_empty() {
+            eprintln!("No supported audio input configs");
+            return;
+        }
+
+        // Choose a format: f32, desired sample rate if possible
+        let desired_sr = self.config.audio.sample_rate;
+        let mut config = supported[0].with_max_sample_rate().config();
+        for cfg in &supported {
+            if cfg.sample_format() == cpal::SampleFormat::F32 {
+                if let Some(req) = desired_sr {
+                    if cfg.min_sample_rate().0 <= req && req <= cfg.max_sample_rate().0 {
+                        config = cfg.clone().with_sample_rate(cpal::SampleRate(req)).config();
+                        break;
+                    }
+                } else {
+                    config = cfg.with_max_sample_rate().config();
+                    break;
+                }
+            }
+        }
+
+        println!("Using audio device: {}", device.name().unwrap_or_else(|_| "Unknown".into()));
+        println!("Audio config: {:?}Hz, {:?}ch", config.sample_rate.0, config.channels);
+
+        let audio_state = Arc::clone(&self.audio_state);
+        let channels = config.channels as usize;
+
+        let stream = match device.build_input_stream(
+            &config,
+            move |data: &[f32], _| {
+                let mut mono: Vec<f32> = Vec::with_capacity(data.len()/channels + 1);
+                for frame in data.chunks_exact(channels) {
+                    let s = frame.iter().copied().sum::<f32>() / (channels as f32);
+                    mono.push(s);
+                }
+                if let Ok(mut st) = audio_state.lock() {
+                    st.push_samples(&mono, config.sample_rate.0);
+                }
+            },
+            move |err| {
+                eprintln!("Audio input error: {}", err);
+            },
+            None
+        ) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("Failed to build audio input stream: {}", e); return; }
+        };
+
+        if let Err(e) = stream.play() {
+            eprintln!("Failed to start audio stream: {}", e);
+            return;
+        }
+        self._audio_stream = Some(stream);
+        println!("Audio input connected successfully!");
     }
 
     fn try_setup_midi(&mut self) -> Result<midir::MidiInputConnection<()>, Box<dyn std::error::Error>> {
@@ -868,6 +1068,8 @@ impl ApplicationHandler for App {
 
         // Setup MIDI based on config
         self.setup_midi();
+        // NEW: setup audio if enabled
+        self.setup_audio();
 
         println!("Controls: F11 - Toggle fullscreen, ESC - Exit");
     }
@@ -905,21 +1107,37 @@ impl ApplicationHandler for App {
                         Err(_) => return,
                     };
 
+                    // NEW: pull an audio snapshot
+                    let (mut level, mut band_low, mut band_mid, mut band_high) = (0.0f32, 0.0, 0.0, 0.0);
+                    if let Ok(mut a) = self.audio_state.lock() {
+                        a.snapshot();
+                        level = a.level_rms;
+                        band_low = a.low;
+                        band_mid = a.mid;
+                        band_high = a.high;
+                    }
+
                     let note_velocity = if midi_state.note_count > 0 {
                         midi_state.notes[midi_state.last_note as usize]
                     } else {
                         0.0
                     };
 
+                    // NEW: blend MIDI with audio (max)
+                    let blended_velocity = note_velocity.max(level);
+                    let blended_pitch_bend = midi_state.pitch_bend.max(band_low * 2.0 - 1.0); // [0,1]→[-1,1]
+                    let blended_cc1 = midi_state.controllers[1].max(band_mid);
+                    let blended_cc74 = midi_state.controllers[74].max(band_high);
+
                     let push_constants = PushConstants {
                         time: elapsed,
                         mouse_x: self.mouse_pos.0 as u32,
                         mouse_y: self.mouse_pos.1 as u32,
                         mouse_pressed: if self.mouse_pressed { 1 } else { 0 },
-                        note_velocity,
-                        pitch_bend: midi_state.pitch_bend,
-                        cc1: midi_state.controllers[1],
-                        cc74: midi_state.controllers[74],
+                        note_velocity: blended_velocity,
+                        pitch_bend: blended_pitch_bend,
+                        cc1: blended_cc1,
+                        cc74: blended_cc74,
                         note_count: midi_state.note_count,
                         last_note: midi_state.last_note as u32,
                     };
@@ -990,6 +1208,7 @@ fn main() -> Result<()> {
              config.window.height,
              if config.window.fullscreen { "Fullscreen" } else { "Windowed" });
     println!("MIDI: {}", if config.midi.enabled { "Enabled" } else { "Disabled" });
+    println!("Audio: {}", if config.audio.enabled { "Enabled" } else { "Disabled" }); // NEW
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 

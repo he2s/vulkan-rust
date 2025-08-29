@@ -13,3 +13,6 @@ auto_connect = true
 [graphics]
 vsync = true
 validation_layers = true  # Enabled in debug builds by default
+
+[audio]
+enabled = true
