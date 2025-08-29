@@ -1,6 +1,6 @@
 [window]
-width = 1920
-height = 1080
+width = 1000
+height = 1000
 title = "Vulkan MIDI Pixel Shader"
 fullscreen = false
 resizable = true

@@ -419,8 +419,8 @@ impl Gfx {
 
         // Shaders & Pipeline
         println!("Compiling shaders...");
-        let vert_code = Self::compile_shader(include_str!("shaders/fullscreen.vert"), shaderc::ShaderKind::Vertex)?;
-        let frag_code = Self::compile_shader(include_str!("shaders/gradient.frag"), shaderc::ShaderKind::Fragment)?;
+        let vert_code = Self::compile_shader(include_str!("shaders/crystal.vert"), shaderc::ShaderKind::Vertex)?;
+        let frag_code = Self::compile_shader(include_str!("shaders/crystal.frag"), shaderc::ShaderKind::Fragment)?;
 
         println!("Creating shader modules...");
         let vert_module = Self::create_shader_module(&device, &vert_code)?;
