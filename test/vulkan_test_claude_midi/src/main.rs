@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::ffi::c_char; // <- add this
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -352,12 +353,19 @@ impl Gfx {
         // Instance with validation layers
         let app_name = CString::new("vulkan-pixel-shader")?;
 
-        let layer_names = if cfg!(debug_assertions) {
+        let layer_names: Vec<std::ffi::CString> = if cfg!(debug_assertions) {
             vec![CString::new("VK_LAYER_KHRONOS_validation").unwrap()]
         } else {
             vec![]
         };
-        let layer_name_pointers: Vec<*const i8> = layer_names.iter().map(|name| name.as_ptr()).collect();
+        // IMPORTANT: use c_char here, not i8/u8
+        let layer_name_pointers: Vec<*const c_char> =
+            layer_names.iter().map(|name| name.as_ptr()).collect();
+        let (enabled_layer_count, pp_enabled_layer_names) = if layer_name_pointers.is_empty() {
+            (0u32, std::ptr::null())
+        } else {
+            (layer_name_pointers.len() as u32, layer_name_pointers.as_ptr())
+        };
 
         let app_info = vk::ApplicationInfo {
             p_application_name: app_name.as_ptr(),
@@ -370,10 +378,10 @@ impl Gfx {
 
         let create_info = vk::InstanceCreateInfo {
             p_application_info: &app_info,
-            enabled_layer_count: layer_name_pointers.len() as u32,
-            pp_enabled_layer_names: layer_name_pointers.as_ptr(),
-            enabled_extension_count: ext_names.len() as u32,
-            pp_enabled_extension_names: ext_names.as_ptr(),
+            enabled_layer_count,
+            pp_enabled_layer_names,
+            enabled_extension_count: ext_names.len() as u32,   // ext_names comes from ash_window
+            pp_enabled_extension_names: ext_names.as_ptr(),    // this is already *const *const c_char
             ..Default::default()
         };
 
@@ -406,7 +414,7 @@ impl Gfx {
             ..Default::default()
         };
 
-        let device_extensions = [swapchain::NAME.as_ptr()];
+        let device_extensions: [*const c_char; 1] = [swapchain::NAME.as_ptr()];
         let device_info = vk::DeviceCreateInfo {
             queue_create_info_count: 1,
             p_queue_create_infos: &queue_info,
