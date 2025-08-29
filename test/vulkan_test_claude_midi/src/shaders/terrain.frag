@@ -19,238 +19,176 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// ---- Noise functions ----
-float hash(vec3 p) {
-    p = fract(p * vec3(443.8975, 397.2973, 491.1871));
-    p += dot(p, p.zyx + 19.19);
-    return fract(p.x * p.y * p.z);
+// ---- Fast math utilities ----
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-float noise3D(vec3 p) {
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
+// ---- Pattern generators (all super cheap!) ----
 
-    float n = mix(
-        mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
-            mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
-        mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
-            mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
-
-    return n;
+// Concentric circles with phase shift
+float circles(vec2 p, float freq, float phase) {
+    float r = length(p);
+    return sin(r * freq + phase);
 }
 
-// Fractal Brownian Motion
-float fbm(vec3 p, int octaves, float lacunarity, float gain) {
-    float amplitude = 0.5;
-    float frequency = 1.0;
-    float total = 0.0;
-    float normalization = 0.0;
-
-    for (int i = 0; i < octaves; i++) {
-        float noiseValue = noise3D(p * frequency);
-        total += noiseValue * amplitude;
-        normalization += amplitude;
-        amplitude *= gain;
-        frequency *= lacunarity;
-    }
-
-    return total / normalization;
+// Grid interference pattern
+float grid(vec2 p, float freq, float rot) {
+    mat2 m = mat2(cos(rot), -sin(rot), sin(rot), cos(rot));
+    p = m * p;
+    return sin(p.x * freq) * sin(p.y * freq);
 }
 
-// Ridged noise for sharp features
-float ridgedNoise(vec3 p) {
-    float n = 1.0 - abs(noise3D(p) * 2.0 - 1.0);
-    return n * n;
+// Spiral pattern
+float spiral(vec2 p, float winds) {
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    return sin(r * 2.0 + a * winds);
 }
 
-float ridgedFBM(vec3 p, int octaves) {
-    float amplitude = 0.5;
-    float frequency = 1.0;
-    float total = 0.0;
-    float normalization = 0.0;
-
-    for (int i = 0; i < octaves; i++) {
-        float noiseValue = ridgedNoise(p * frequency);
-        total += noiseValue * amplitude;
-        normalization += amplitude;
-        amplitude *= 0.5;
-        frequency *= 2.1;
-    }
-
-    return total / normalization;
+// Checkerboard with distortion
+float checker(vec2 p) {
+    vec2 q = floor(p);
+    return mod(q.x + q.y, 2.0) * 2.0 - 1.0;
 }
 
-// ---- Terrain SDF ----
-float terrainMap(vec3 p) {
-    // Audio reactive parameters
-    float energy = pc.note_velocity;
-    float lowFreq = pc.pitch_bend * 0.5 + 0.5;
-    float midFreq = pc.cc1;
-    float highFreq = pc.cc74;
-
-    // Animated domain warping
-    float warpSpeed = 0.1 + 0.2 * energy;
-    vec3 warp = vec3(
-        fbm(p * 0.3 + vec3(pc.time * warpSpeed, 0, 0), 3, 2.0, 0.5),
-        fbm(p * 0.3 + vec3(0, pc.time * warpSpeed * 0.7, 0), 3, 2.0, 0.5),
-        fbm(p * 0.3 + vec3(0, 0, pc.time * warpSpeed * 0.5), 3, 2.0, 0.5)
-    ) * (0.5 + 0.5 * midFreq);
-
-    vec3 wp = p + warp * 0.3;
-
-    // Base terrain height
-    float terrain = p.y;
-
-    // Large scale features (mountains/valleys)
-    float largeForms = ridgedFBM(wp * 0.2 + vec3(pc.time * 0.02, 0, 0), 4) * 2.5;
-    largeForms *= 1.0 + 0.3 * lowFreq;
-
-    // Medium details
-    float mediumDetail = fbm(wp * 0.8, 5, 2.0, 0.5) * 0.8;
-    mediumDetail *= 1.0 + 0.2 * midFreq;
-
-    // Fine details (reactive to high frequencies)
-    float fineDetail = fbm(wp * 3.0, 3, 2.5, 0.4) * 0.15;
-    fineDetail *= 1.0 + 0.5 * highFreq;
-
-    // Combine layers
-    terrain += largeForms + mediumDetail + fineDetail;
-
-    // Create overhangs and caves
-    float caves = fbm(p * 0.5 + vec3(0, p.y * 0.3, 0), 4, 2.0, 0.5);
-    caves = smoothstep(0.3, 0.7, caves) * 0.8;
-    terrain -= caves * (0.5 + 0.5 * energy);
-
-    return terrain;
+// Zigzag waves
+float zigzag(float x, float freq) {
+    x *= freq;
+    return abs(mod(x, 2.0) - 1.0) * 2.0 - 1.0;
 }
 
-// Softer version for faster marching
-float terrainMapSoft(vec3 p) {
-    float energy = pc.note_velocity;
-    vec3 wp = p + vec3(pc.time * 0.05, 0, 0);
-    float terrain = p.y + ridgedFBM(wp * 0.2, 3) * 2.0 * (1.0 + 0.3 * energy);
-    return terrain;
-}
-
-// ---- Rendering ----
-vec3 calcNormal(vec3 p) {
-    const float eps = 0.01;
-    vec3 n;
-    n.x = terrainMap(p + vec3(eps, 0, 0)) - terrainMap(p - vec3(eps, 0, 0));
-    n.y = terrainMap(p + vec3(0, eps, 0)) - terrainMap(p - vec3(0, eps, 0));
-    n.z = terrainMap(p + vec3(0, 0, eps)) - terrainMap(p - vec3(0, 0, eps));
-    return normalize(n);
-}
-
-float softshadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
-    float res = 1.0;
-    float t = mint;
-    for(int i = 0; i < 16; i++) {
-        float h = terrainMapSoft(ro + rd * t);
-        res = min(res, k * h / t);
-        t += clamp(h, 0.02, 0.2);
-        if(h < 0.001 || t > maxt) break;
-    }
-    return clamp(res, 0.0, 1.0);
-}
-
+// ---- Main composition ----
 void main() {
     vec2 uv = (fragUV - 0.5) * 2.0;
     const vec2 resolution = vec2(800.0, 600.0);
     uv.x *= resolution.x / resolution.y;
 
-    // Camera setup (reactive to audio)
-    float camDist = 5.0 - 1.0 * pc.note_velocity;
-    float camHeight = 2.0 + 1.0 * pc.cc1;
-    vec3 ro = vec3(
-        camDist * sin(pc.time * 0.1),
-        camHeight,
-        camDist * cos(pc.time * 0.1)
-    );
-    vec3 ta = vec3(0, 0.5, 0);
+    // Audio reactive parameters
+    float energy = pc.note_velocity;
+    float low = pc.pitch_bend * 0.5 + 0.5;
+    float mid = pc.cc1;
+    float high = pc.cc74;
+    float noteFreq = float(pc.last_note) / 128.0;
 
-    // Camera matrix
-    vec3 ww = normalize(ta - ro);
-    vec3 uu = normalize(cross(ww, vec3(0, 1, 0)));
-    vec3 vv = normalize(cross(uu, ww));
-    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.5 * ww);
+    // Time modulation
+    float t = pc.time;
+    float tSlow = t * 0.3;
+    float tFast = t * 2.0;
 
-    // Raymarching
-    float t = 0.0;
-    float tmax = 50.0;
-    vec3 col = vec3(0.02); // Dark background
+    // Mouse influence
+    vec2 mouse = vec2(float(pc.mouse_x), float(pc.mouse_y)) / resolution;
+    mouse = (mouse - 0.5) * 2.0;
+    mouse.x *= resolution.x / resolution.y;
 
-    // Sky gradient
-    float skyGrad = 1.0 - abs(rd.y);
-    col += vec3(0.03, 0.04, 0.05) * skyGrad * 0.5;
+    // ---- Layer 1: Base grid with rotation ----
+    float rot1 = tSlow + low * 3.14159;
+    float freq1 = 10.0 + 20.0 * mid;
+    float layer1 = grid(uv, freq1, rot1);
 
-    // March
-    float material = 0.0;
-    vec3 pos;
-    bool hit = false;
+    // ---- Layer 2: Concentric circles from center ----
+    vec2 center = mix(vec2(0.0), mouse, float(pc.mouse_pressed) * 0.5);
+    float freq2 = 15.0 + 30.0 * high;
+    float layer2 = circles(uv - center, freq2, tFast);
 
-    for(int i = 0; i < 128; i++) {
-        pos = ro + rd * t;
-        float h = terrainMap(pos);
+    // ---- Layer 3: Multiple interference points ----
+    float layer3 = 0.0;
+    for(int i = 0; i < 3; i++) {
+        float angle = float(i) * 2.094395 + tSlow; // 2π/3
+        vec2 pos = vec2(cos(angle), sin(angle)) * 0.5 * (1.0 + energy);
+        layer3 += circles(uv - pos, 20.0 + float(i) * 5.0, t * (1.0 + float(i) * 0.3));
+    }
+    layer3 /= 3.0;
 
-        if(abs(h) < 0.001 * t) {
-            hit = true;
-            break;
-        }
+    // ---- Layer 4: Spirals ----
+    float spiralWind = 5.0 + float(pc.note_count) * 2.0;
+    float layer4 = spiral(uv * (1.0 + 0.5 * sin(tSlow)), spiralWind);
 
-        // Atmospheric accumulation
-        float density = exp(-pos.y * 0.2) * 0.01;
-        col += vec3(0.05, 0.06, 0.07) * density * (1.0 - smoothstep(0.0, tmax, t));
+    // ---- Layer 5: Zigzag distortion field ----
+    vec2 distort = vec2(
+        zigzag(uv.y + tSlow, 5.0 + 10.0 * mid),
+        zigzag(uv.x - tSlow, 5.0 + 10.0 * mid)
+    ) * 0.1 * energy;
 
-        t += h * 0.5;
-        if(t > tmax) break;
+    // Apply distortion to UV for subsequent layers
+    vec2 uvDist = uv + distort;
+
+    // ---- Layer 6: Checkerboard with wave distortion ----
+    vec2 checkUV = uvDist * 8.0;
+    checkUV.x += sin(uvDist.y * 10.0 + t) * energy;
+    checkUV.y += cos(uvDist.x * 10.0 - t) * energy;
+    float layer6 = checker(checkUV);
+
+    // ---- Combine layers with different operations ----
+    float pattern = 0.0;
+
+    // Multiplication creates moiré
+    pattern += layer1 * layer2 * 0.5;
+
+    // Addition creates interference
+    pattern += (layer3 + layer4) * 0.3;
+
+    // XOR-like operation
+    pattern += abs(layer1 - layer2) * 0.2;
+
+    // Modulation
+    pattern *= 1.0 + layer6 * 0.2;
+
+    // ---- Add rhythmic strobe based on note velocity ----
+    float strobe = sin(t * 20.0 * (1.0 + energy * 3.0)) * energy * 0.3;
+    pattern += strobe;
+
+    // ---- Threshold operations for sharp contrast ----
+    float thresh = sin(tSlow) * 0.3; // Animated threshold
+
+    // Multi-level quantization
+    if(high > 0.5) {
+        // Hard quantization for sharp edges
+        pattern = floor(pattern * 3.0 + 0.5) / 3.0;
+    } else {
+        // Smooth quantization
+        pattern = smoothstep(thresh - 0.1, thresh + 0.1, pattern);
     }
 
-    if(hit) {
-        vec3 nor = calcNormal(pos);
+    // ---- Final composition ----
+    float final = pattern;
 
-        // Lighting
-        vec3 lig1 = normalize(vec3(0.5, 0.8, -0.3));
-        vec3 lig2 = normalize(vec3(-0.3, 0.4, 0.5));
-
-        float dif1 = max(dot(nor, lig1), 0.0);
-        float dif2 = max(dot(nor, lig2), 0.0) * 0.5;
-        float amb = 0.1;
-
-        // Shadows
-        float sha1 = softshadow(pos + nor * 0.01, lig1, 0.01, 10.0, 8.0);
-
-        // Material color (grayscale with subtle variation)
-        vec3 mat = vec3(0.3 + 0.2 * fbm(pos * 2.0, 3, 2.0, 0.5));
-        mat *= 1.0 + 0.3 * vertexEnergy;
-
-        // Ridge highlighting
-        float ridges = ridgedNoise(pos * 4.0);
-        mat += vec3(0.1) * ridges * pc.cc74;
-
-        // Combine lighting
-        col = mat * (amb + dif1 * sha1 + dif2);
-
-        // Depth fog
-        float fog = 1.0 - exp(-t * 0.05);
-        col = mix(col, vec3(0.02, 0.02, 0.03), fog);
-
-        // Atmospheric scattering
-        col += vec3(0.03, 0.04, 0.05) * fog * 0.5;
+    // Add concentric wave from mouse when pressed
+    if(pc.mouse_pressed == 1) {
+        float wave = sin(length(uv - mouse) * 30.0 - t * 10.0);
+        final = mix(final, wave, 0.3);
     }
 
-    // Distance fog for everything
-    float globalFog = 1.0 - exp(-t * 0.02);
-    col = mix(col, vec3(0.01), globalFog * 0.3);
+    // Kaleidoscope fold based on note
+    float foldAngle = 6.28318 / (3.0 + float(pc.last_note % 12));
+    float angle = atan(uvDist.y, uvDist.x);
+    angle = mod(angle, foldAngle);
+    angle = abs(angle - foldAngle * 0.5);
+    vec2 foldedUV = vec2(cos(angle), sin(angle)) * length(uvDist);
 
-    // Subtle vignette
-    float vignette = 1.0 - dot(fragUV - 0.5, fragUV - 0.5) * 0.5;
-    col *= vignette;
+    // Mix in folded version
+    float folded = circles(foldedUV, 20.0, t * 3.0);
+    final = mix(final, folded, mid * 0.3);
 
-    // Tone mapping and gamma
-    col = col / (1.0 + col); // Reinhard tone mapping
-    col = pow(col, vec3(1.0 / 2.2)); // Gamma correction
+    // ---- Inversion zones ----
+    float invertZone = sin(length(uv) * 10.0 - t * 2.0) *
+                       sin(atan(uv.y, uv.x) * float(3 + pc.note_count));
+    if(invertZone > 0.5) {
+        final = 1.0 - final;
+    }
 
+    // ---- Edge enhancement ----
+    float edge = fwidth(final) * 10.0;
+    final = mix(final, 1.0 - final, edge * high);
+
+    // ---- Convert to B&W with slight contrast adjustment ----
+    final = smoothstep(0.4 - low * 0.3, 0.6 + low * 0.3, final);
+
+    // Vignette for depth
+    float vignette = 1.0 - length(uv) * 0.3;
+    final *= vignette;
+
+    // Output
+    vec3 col = vec3(final);
     outColor = vec4(col, 1.0);
 }
