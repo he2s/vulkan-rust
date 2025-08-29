@@ -1,0 +1,15 @@
+[window]
+width = 1920
+height = 1080
+title = "Vulkan MIDI Pixel Shader"
+fullscreen = false
+resizable = true
+
+[midi]
+enabled = true
+auto_connect = true
+# port_name = "MPK261"  # Uncomment to connect to specific MIDI device
+
+[graphics]
+vsync = true
+validation_layers = true  # Enabled in debug builds by default

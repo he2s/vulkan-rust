@@ -17,3 +17,7 @@ raw-window-handle = "0.6"
 #env_logger = "0.10"
 shaderc = { version = "0.8", features = ["build-from-source"] }  # Add this for runtime shader compilation
 midir = "0.10.2"
+
+clap = { version = "4.4", features = ["derive"] }  # New
+serde = { version = "1.0", features = ["derive"] }  # New
+toml = "0.8"  # New
