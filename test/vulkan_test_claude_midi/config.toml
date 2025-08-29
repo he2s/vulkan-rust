@@ -16,3 +16,9 @@ validation_layers = true  # Enabled in debug builds by default
 
 [audio]
 enabled = true
+
+[shader]
+preset = "custom"  # Options: "torus", "terrain", "crystal", "custom"
+custom_vertex_path = "shaders/custom.vert"  # Only used when preset = "custom"
+custom_fragment_path = "shaders/custom.frag"  # Only used when preset = "custom"
+allow_runtime_switching = true  # Enable TAB key to cycle shaders
