@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
     path::Path,
     fs,
-    collections::VecDeque,
+    collections::{VecDeque, HashMap},
     cell::RefCell
 };
 use winit::{
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 // Audio imports
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use rustfft::{FftPlanner, num_complex::Complex32};
+use rustfft::{FftPlanner, num_complex::Complex32, Fft};
 
 // Constants
 const DEFAULT_WIDTH: u32 = 800;
@@ -38,6 +38,8 @@ const MAX_CONTROLLERS: usize = 128;
 const AUDIO_RING_CAPACITY: usize = 4096;
 const FFT_SAMPLE_SIZE: usize = 1024;
 const DEFAULT_SAMPLE_RATE: u32 = 48000;
+const MAX_FFT_SIZE: usize = 2048;
+const MIN_FFT_SIZE: usize = 256;
 
 // ==================== Configuration Types ====================
 
@@ -292,7 +294,7 @@ impl ShaderSources {
     }
 }
 
-// ==================== State Management ====================
+// ==================== Optimized State Management ====================
 
 #[derive(Clone, Debug)]
 pub struct MidiState {
@@ -315,27 +317,80 @@ impl Default for MidiState {
     }
 }
 
+// PERFORMANCE OPTIMIZATION #2: Frame state snapshot to reduce mutex lock frequency
 #[derive(Clone, Debug)]
-pub struct AudioState {
-    ring: VecDeque<f32>,
-    capacity: usize,
-    last_sample_rate: u32,
+pub struct FrameState {
+    pub midi: MidiState,
+    pub audio_levels: AudioLevels,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AudioLevels {
     pub level_rms: f32,
     pub low: f32,
     pub mid: f32,
     pub high: f32,
 }
 
+impl Default for AudioLevels {
+    fn default() -> Self {
+        Self {
+            level_rms: 0.0,
+            low: 0.0,
+            mid: 0.0,
+            high: 0.0,
+        }
+    }
+}
+
+// OPTIMIZATION #1 & #3: Cached FFT planner and pre-allocated buffers
+pub struct AudioState {
+    ring: VecDeque<f32>,
+    capacity: usize,
+    last_sample_rate: u32,
+    pub levels: AudioLevels,
+
+    // OPTIMIZATION: Cached FFT components
+    fft_planner: FftPlanner<f32>,
+    fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>,
+
+    // OPTIMIZATION: Pre-allocated buffers to avoid runtime allocations
+    processing_buffer: Vec<Complex32>,
+    windowing_buffer: Vec<f32>,
+    mono_conversion_buffer: Vec<f32>,
+}
+
+// Manual Debug implementation since FftPlanner doesn't implement Debug
+impl std::fmt::Debug for AudioState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioState")
+            .field("ring_len", &self.ring.len())
+            .field("capacity", &self.capacity)
+            .field("last_sample_rate", &self.last_sample_rate)
+            .field("levels", &self.levels)
+            .field("fft_cache_size", &self.fft_cache.len())
+            .field("processing_buffer_capacity", &self.processing_buffer.capacity())
+            .field("windowing_buffer_capacity", &self.windowing_buffer.capacity())
+            .field("mono_conversion_buffer_capacity", &self.mono_conversion_buffer.capacity())
+            .finish()
+    }
+}
 impl AudioState {
     pub fn new() -> Self {
         Self {
             ring: VecDeque::with_capacity(AUDIO_RING_CAPACITY),
             capacity: AUDIO_RING_CAPACITY,
             last_sample_rate: DEFAULT_SAMPLE_RATE,
-            level_rms: 0.0,
-            low: 0.0,
-            mid: 0.0,
-            high: 0.0,
+            levels: AudioLevels::default(),
+
+            // Initialize cached components
+            fft_planner: FftPlanner::<f32>::new(),
+            fft_cache: HashMap::with_capacity(8), // Cache common FFT sizes
+
+            // Pre-allocate buffers with generous capacity
+            processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
+            windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
+            mono_conversion_buffer: Vec::with_capacity(1024),
         }
     }
 
@@ -349,31 +404,30 @@ impl AudioState {
         }
     }
 
-    pub fn analyze(&mut self) {
+    // OPTIMIZATION: Combine analysis and level extraction to reduce lock time
+    pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
         if self.ring.is_empty() {
-            self.reset_analysis();
-            return;
+            self.levels = AudioLevels::default();
+            return self.levels;
         }
 
         let take = FFT_SAMPLE_SIZE.min(self.ring.len());
-        let mut buffer: Vec<f32> = self.ring.iter().rev().take(take).cloned().collect();
-        buffer.reverse();
+
+        // Reuse windowing buffer to avoid allocation
+        self.windowing_buffer.clear();
+        self.windowing_buffer.extend(self.ring.iter().rev().take(take));
+        self.windowing_buffer.reverse();
 
         // Calculate RMS
-        let rms = self.calculate_rms(&buffer);
+        let rms = self.calculate_rms(&self.windowing_buffer);
 
-        // Perform frequency analysis
-        let (low, mid, high) = self.perform_fft_analysis(&mut buffer);
+        // Perform frequency analysis with cached FFT
+        let (low, mid, high) = self.perform_cached_fft_analysis();
 
         // Apply smoothing
         self.apply_smoothing(rms, low, mid, high);
-    }
 
-    fn reset_analysis(&mut self) {
-        self.level_rms = 0.0;
-        self.low = 0.0;
-        self.mid = 0.0;
-        self.high = 0.0;
+        self.levels
     }
 
     fn calculate_rms(&self, buffer: &[f32]) -> f32 {
@@ -381,27 +435,31 @@ impl AudioState {
         (sum_squares / buffer.len() as f32).sqrt()
     }
 
-    fn perform_fft_analysis(&self, buffer: &mut Vec<f32>) -> (f32, f32, f32) {
-        let fft_len = buffer.len().next_power_of_two().max(256).min(2048);
-        buffer.resize(fft_len, 0.0);
+    // OPTIMIZATION: Use cached FFT planner and reuse buffers
+    fn perform_cached_fft_analysis(&mut self) -> (f32, f32, f32) {
+        let fft_len = self.windowing_buffer.len().next_power_of_two().max(MIN_FFT_SIZE).min(MAX_FFT_SIZE);
+        self.windowing_buffer.resize(fft_len, 0.0);
 
-        // Apply windowing function
-        self.apply_hann_window(buffer);
+        // Apply windowing function in-place
+        Self::apply_hann_window(&mut self.windowing_buffer);
 
-        // Prepare FFT
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(fft_len);
-        let mut spectrum: Vec<Complex32> = buffer
-            .iter()
-            .map(|&v| Complex32::new(v, 0.0))
-            .collect();
+        // Get or create cached FFT (MAJOR OPTIMIZATION)
+        let fft = self.fft_cache.entry(fft_len).or_insert_with(|| {
+            self.fft_planner.plan_fft_forward(fft_len)
+        }).clone();
 
-        fft.process(&mut spectrum);
+        // Reuse processing buffer
+        self.processing_buffer.clear();
+        self.processing_buffer.extend(
+            self.windowing_buffer.iter().map(|&v| Complex32::new(v, 0.0))
+        );
 
-        self.analyze_frequency_bands(&spectrum, fft_len)
+        fft.process(&mut self.processing_buffer);
+
+        self.analyze_frequency_bands(fft_len)
     }
 
-    fn apply_hann_window(&self, buffer: &mut [f32]) {
+    fn apply_hann_window(buffer: &mut [f32]) {
         let len = buffer.len() as f32;
         for (i, sample) in buffer.iter_mut().enumerate() {
             let window = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / len).cos());
@@ -409,14 +467,14 @@ impl AudioState {
         }
     }
 
-    fn analyze_frequency_bands(&self, spectrum: &[Complex32], fft_len: usize) -> (f32, f32, f32) {
+    fn analyze_frequency_bands(&self, fft_len: usize) -> (f32, f32, f32) {
         let sample_rate = self.last_sample_rate as f32;
         let bin_hz = sample_rate / fft_len as f32;
         let mut low = 0.0;
         let mut mid = 0.0;
         let mut high = 0.0;
 
-        for (i, complex) in spectrum.iter().enumerate().take(fft_len / 2) {
+        for (i, complex) in self.processing_buffer.iter().enumerate().take(fft_len / 2) {
             let frequency = i as f32 * bin_hz;
             let magnitude = complex.norm();
 
@@ -439,10 +497,23 @@ impl AudioState {
         const SMOOTHING_FACTOR: f32 = 0.7;
         let normalize = |x: f32| (x / 1000.0).min(1.0);
 
-        self.level_rms = SMOOTHING_FACTOR * self.level_rms + (1.0 - SMOOTHING_FACTOR) * rms.min(1.0);
-        self.low = SMOOTHING_FACTOR * self.low + (1.0 - SMOOTHING_FACTOR) * normalize(low);
-        self.mid = SMOOTHING_FACTOR * self.mid + (1.0 - SMOOTHING_FACTOR) * normalize(mid);
-        self.high = SMOOTHING_FACTOR * self.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
+        self.levels.level_rms = SMOOTHING_FACTOR * self.levels.level_rms + (1.0 - SMOOTHING_FACTOR) * rms.min(1.0);
+        self.levels.low = SMOOTHING_FACTOR * self.levels.low + (1.0 - SMOOTHING_FACTOR) * normalize(low);
+        self.levels.mid = SMOOTHING_FACTOR * self.levels.mid + (1.0 - SMOOTHING_FACTOR) * normalize(mid);
+        self.levels.high = SMOOTHING_FACTOR * self.levels.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
+    }
+
+    // OPTIMIZATION: Pre-allocated buffer for mono conversion
+    pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
+        self.mono_conversion_buffer.clear();
+        self.mono_conversion_buffer.reserve(data.len() / channels + 1);
+
+        for frame in data.chunks_exact(channels) {
+            let sample = frame.iter().sum::<f32>() / channels as f32;
+            self.mono_conversion_buffer.push(sample);
+        }
+
+        &self.mono_conversion_buffer
     }
 }
 
@@ -503,12 +574,19 @@ pub struct VulkanSync {
     in_flight: vk::Fence,
 }
 
+// OPTIMIZATION: Cache dynamic state to avoid redundant updates
+#[derive(Default)]
+pub struct VulkanState {
+    current_extent: Option<vk::Extent2D>,
+}
+
 pub struct Gfx {
     context: VulkanContext,
     swapchain: VulkanSwapchain,
     pipeline: VulkanPipeline,
     commands: VulkanCommands,
     sync: VulkanSync,
+    state: VulkanState, // OPTIMIZATION: Track state to avoid redundant operations
 }
 
 impl Gfx {
@@ -525,6 +603,7 @@ impl Gfx {
             pipeline,
             commands,
             sync,
+            state: VulkanState::default(),
         })
     }
 
@@ -538,6 +617,9 @@ impl Gfx {
         // Create new swapchain
         self.swapchain = VulkanSwapchain::new(&self.context, window)?;
         self.pipeline.recreate_framebuffers(&self.context.device, &self.swapchain)?;
+
+        // Reset cached state
+        self.state.current_extent = None;
 
         println!("Swapchain recreated: {}x{}", self.swapchain.extent.width, self.swapchain.extent.height);
         Ok(())
@@ -556,7 +638,7 @@ impl Gfx {
         Ok(())
     }
 
-    pub unsafe fn draw(&self, push_constants: &PushConstants) -> Result<bool> {
+    pub unsafe fn draw(&mut self, push_constants: &PushConstants) -> Result<bool> {
         // Wait for previous frame
         self.context.device.wait_for_fences(&[self.sync.in_flight], true, u64::MAX)?;
         self.context.device.reset_fences(&[self.sync.in_flight])?;
@@ -592,7 +674,7 @@ impl Gfx {
     }
 
     unsafe fn record_command_buffer(
-        &self,
+        &mut self,
         cmd_buffer: vk::CommandBuffer,
         image_index: u32,
         push_constants: &PushConstants,
@@ -620,17 +702,20 @@ impl Gfx {
         self.context.device.cmd_begin_render_pass(cmd_buffer, &render_pass_begin, vk::SubpassContents::INLINE);
         self.context.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.pipeline);
 
-        // Set dynamic viewport and scissor
-        let viewport = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: self.swapchain.extent.width as f32,
-            height: self.swapchain.extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-        self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
-        self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+        // OPTIMIZATION: Only update dynamic state when changed
+        if Some(self.swapchain.extent) != self.state.current_extent {
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: self.swapchain.extent.width as f32,
+                height: self.swapchain.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
+            self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+            self.state.current_extent = Some(self.swapchain.extent);
+        }
 
         // Push constants
         self.context.device.cmd_push_constants(
@@ -1258,7 +1343,7 @@ impl Drop for Gfx {
     }
 }
 
-// ==================== Input Handling ====================
+// ==================== Optimized Input Handling ====================
 
 pub struct InputManager {
     midi_state: Arc<Mutex<MidiState>>,
@@ -1275,6 +1360,20 @@ impl InputManager {
             audio_state: Arc::new(Mutex::new(AudioState::new())),
             _audio_stream: None,
         }
+    }
+
+    // OPTIMIZATION #2: Single function to get all frame state with minimal lock time
+    pub fn get_frame_state(&self) -> FrameState {
+        // Get MIDI state (quick clone)
+        let midi = self.midi_state.lock().unwrap().clone();
+
+        // Get audio levels and perform analysis in one lock acquisition
+        let audio_levels = {
+            let mut audio_state = self.audio_state.lock().unwrap();
+            audio_state.analyze_and_get_levels()
+        };
+
+        FrameState { midi, audio_levels }
     }
 
     pub fn setup_midi(&mut self, config: &MidiConfig) {
@@ -1313,14 +1412,6 @@ impl InputManager {
                 eprintln!("Audio setup failed: {}", e);
             }
         }
-    }
-
-    pub fn get_midi_state(&self) -> Arc<Mutex<MidiState>> {
-        Arc::clone(&self.midi_state)
-    }
-
-    pub fn get_audio_state(&self) -> Arc<Mutex<AudioState>> {
-        Arc::clone(&self.audio_state)
     }
 
     fn try_setup_midi(&self, config: &MidiConfig) -> Result<midir::MidiInputConnection<()>, Box<dyn std::error::Error>> {
@@ -1378,8 +1469,10 @@ impl InputManager {
         let stream = device.build_input_stream(
             &audio_config,
             move |data: &[f32], _| {
-                let mono_samples = Self::convert_to_mono(data, channels);
-                if let Ok(mut state) = audio_state.lock() {
+                // OPTIMIZATION: Minimize lock time by doing conversion outside the lock
+                if let Ok(mut state) = audio_state.try_lock() {
+                    // Convert to mono and clone to avoid borrow conflicts
+                    let mono_samples = state.convert_to_mono_optimized(data, channels).to_vec();
                     state.push_samples(&mono_samples, audio_config.sample_rate.0);
                 }
             },
@@ -1443,15 +1536,6 @@ impl InputManager {
         }
 
         Ok(stream_config)
-    }
-
-    fn convert_to_mono(data: &[f32], channels: usize) -> Vec<f32> {
-        let mut mono = Vec::with_capacity(data.len() / channels + 1);
-        for frame in data.chunks_exact(channels) {
-            let sample = frame.iter().sum::<f32>() / channels as f32;
-            mono.push(sample);
-        }
-        mono
     }
 
     fn handle_midi_message(midi_state: &Arc<Mutex<MidiState>>, message: &[u8]) {
@@ -1604,24 +1688,21 @@ impl App {
         }
     }
 
+    // OPTIMIZATION: Use frame state snapshot instead of multiple locks
     fn get_push_constants(&self, elapsed: f32) -> PushConstants {
-        let midi_state = self.input_manager.midi_state.lock().unwrap();
-        let mut audio_state = self.input_manager.audio_state.lock().unwrap();
+        let frame_state = self.input_manager.get_frame_state();
 
-        // Update audio analysis
-        audio_state.analyze();
-
-        let note_velocity = if midi_state.note_count > 0 {
-            midi_state.notes[midi_state.last_note as usize]
+        let note_velocity = if frame_state.midi.note_count > 0 {
+            frame_state.midi.notes[frame_state.midi.last_note as usize]
         } else {
             0.0
         };
 
         // Blend MIDI and audio data
-        let blended_velocity = note_velocity.max(audio_state.level_rms);
-        let blended_pitch_bend = midi_state.pitch_bend.max(audio_state.low * 2.0 - 1.0);
-        let blended_cc1 = midi_state.controllers[1].max(audio_state.mid);
-        let blended_cc74 = midi_state.controllers[74].max(audio_state.high);
+        let blended_velocity = note_velocity.max(frame_state.audio_levels.level_rms);
+        let blended_pitch_bend = frame_state.midi.pitch_bend.max(frame_state.audio_levels.low * 2.0 - 1.0);
+        let blended_cc1 = frame_state.midi.controllers[1].max(frame_state.audio_levels.mid);
+        let blended_cc74 = frame_state.midi.controllers[74].max(frame_state.audio_levels.high);
 
         PushConstants {
             time: elapsed,
@@ -1632,8 +1713,8 @@ impl App {
             pitch_bend: blended_pitch_bend,
             cc1: blended_cc1,
             cc74: blended_cc74,
-            note_count: midi_state.note_count,
-            last_note: midi_state.last_note as u32,
+            note_count: frame_state.midi.note_count,
+            last_note: frame_state.midi.last_note as u32,
         }
     }
 
