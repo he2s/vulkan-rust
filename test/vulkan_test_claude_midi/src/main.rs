@@ -343,6 +343,7 @@ impl Default for AudioLevels {
     }
 }
 
+// PERFORMANCE OPTIMIZATION #1 & #3: Cached FFT planner and pre-allocated buffers
 // OPTIMIZATION #1 & #3: Cached FFT planner and pre-allocated buffers
 pub struct AudioState {
     ring: VecDeque<f32>,
@@ -375,6 +376,7 @@ impl std::fmt::Debug for AudioState {
             .finish()
     }
 }
+
 impl AudioState {
     pub fn new() -> Self {
         Self {
@@ -1688,6 +1690,21 @@ impl App {
         }
     }
 
+    fn reload_shaders(&mut self) {
+        if let Some(gfx) = &mut self.gfx {
+            println!("Reloading and recompiling shaders...");
+            match unsafe { gfx.recreate_pipeline(&self.config.shader) } {
+                Ok(()) => {
+                    println!("Shaders reloaded successfully!");
+                }
+                Err(e) => {
+                    eprintln!("Failed to reload shaders: {}", e);
+                    println!("Check your shader files for compilation errors.");
+                }
+            }
+        }
+    }
+
     // OPTIMIZATION: Use frame state snapshot instead of multiple locks
     fn get_push_constants(&self, elapsed: f32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
@@ -1721,6 +1738,7 @@ impl App {
     fn print_controls(&self) {
         println!("Controls:");
         println!("  F11 - Toggle fullscreen");
+        println!("  F5  - Reload and recompile shaders");
         println!("  ESC - Exit (or exit fullscreen)");
         if self.config.shader.allow_runtime_switching {
             println!("  TAB - Cycle shaders");
@@ -1802,6 +1820,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     PhysicalKey::Code(KeyCode::Tab) => self.cycle_shader(),
+                    PhysicalKey::Code(KeyCode::F5) => self.reload_shaders(),
                     _ => {}
                 }
             }
