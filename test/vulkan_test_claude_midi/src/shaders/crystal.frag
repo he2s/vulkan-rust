@@ -45,7 +45,7 @@ float wf_s(in vec3 p, inout vec4 accum, float T, float t) {
 
 void main() {
     // --- Interactivity mappings ---
-    float speed    = 1.0 + pc.cc1 * 1.5 + pc.note_velocity * 0.5;  // mid/velocity -> speed
+    float speed    = 0.10 + pc.cc1 * 0.5 + pc.note_velocity * 0.5;  // mid/velocity -> speed
     float hueShift = pc.cc74;                                       // highs -> tint
     float wobble   = pc.pitch_bend;                                 // bend -> camera wobble
     float T        = pc.time * speed;
@@ -63,8 +63,8 @@ void main() {
     float t = 0.0;
 
     // Raymarch — same structure as original (more iterations for quality)
-    const int MAX_STEPS = 12;
-    const float MAX_DIST = 100.0;
+    const int MAX_STEPS = 5;
+    const float MAX_DIST = 10.0;
 
     for (int i = 0; i < MAX_STEPS; ++i) {
         // Direction from rotated screen coords
@@ -96,9 +96,9 @@ void main() {
 
     // Mouse halo
     vec2 m  = vec2(float(pc.mouse_x), float(pc.mouse_y));
-    float mg = exp(-length(gl_FragCoord.xy - m) / 200.0) * (pc.mouse_pressed != 0u ? 0.5 : 0.2);
+    float mg = exp(-length(gl_FragCoord.xy - wobble * m) / 200.0) * (pc.mouse_pressed != 0u ? 0.5 : 0.2);
     base += mg;
 
     // Simple gamma
-    fragColor = vec4(pow(max(base, 0.0), vec3(1.7545)), 1.0);
+    fragColor = vec4(pow(max(base, 0.0), vec3(2.7545)), 1.0);
 }
