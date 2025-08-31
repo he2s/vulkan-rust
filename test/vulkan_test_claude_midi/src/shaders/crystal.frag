@@ -63,7 +63,7 @@ void main() {
     float t = 0.0;
 
     // Raymarch — same structure as original (more iterations for quality)
-    const int MAX_STEPS = 28;
+    const int MAX_STEPS = 12;
     const float MAX_DIST = 100.0;
 
     for (int i = 0; i < MAX_STEPS; ++i) {
