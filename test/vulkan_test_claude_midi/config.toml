@@ -22,3 +22,8 @@ preset = "terrain"  # Options: "torus", "terrain", "crystal", "custom"
 custom_vertex_path = "shaders/custom.vert"  # Only used when preset = "custom"
 custom_fragment_path = "shaders/custom.frag"  # Only used when preset = "custom"
 allow_runtime_switching = true  # Enable TAB key to cycle shaders
+
+#[osc]
+#enabled = true
+#port = 8000
+#address = "0.0.0.0"  #

@@ -11,6 +11,12 @@ layout(push_constant) uniform PushConstants {
     float cc74;
     uint note_count;
     uint last_note;
+    float osc_a_x;
+    float osc_a_y;
+    float osc_b_x;
+    float osc_b_y;
+    float osc_trig;
+    float _padding[3];
 } pc;
 
 layout(location = 0) out vec2 fragCoord;

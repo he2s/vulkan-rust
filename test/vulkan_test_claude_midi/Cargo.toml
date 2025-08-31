@@ -23,3 +23,4 @@ serde = { version = "1.0", features = ["derive"] }  # New
 toml = "0.8"  # New
 cpal = "0.15"
 rustfft = "6"
+rosc = "0.10"
