@@ -1,0 +1,51 @@
+# Cargo.toml
+
+[package]
+name = "vulkan-visualizer"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+# Core
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Vulkan
+ash = "0.38"
+ash-window = "0.13"
+
+# Window management
+winit = "0.30"
+raw-window-handle = "0.6"
+
+# Shader compilation
+shaderc = "0.8"
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Input systems
+midir = "0.10"
+cpal = "0.15"
+
+# Math and processing
+bytemuck = "1.16"
+glam = "0.28"
+rustfft = "6.2"
+
+# Async runtime for input handling
+tokio = { version = "1.39", features = ["sync", "rt", "macros"] }
+crossbeam-channel = "0.5"
+
+[profile.dev]
+opt-level = 1  # Some optimization for better debug performance
+
+[profile.release]
+lto = true
+codegen-units = 1
