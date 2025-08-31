@@ -7,8 +7,8 @@ resizable = true
 
 [midi]
 enabled = true
-auto_connect = true
-# port_name = "MPK261"  # Uncomment to connect to specific MIDI device
+auto_connect = false 
+port_name = "ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2 24:1"  # Uncomment to connect to specific MIDI device
 
 [graphics]
 vsync = true
