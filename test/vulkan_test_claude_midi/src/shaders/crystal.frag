@@ -53,9 +53,9 @@ void main() {
     vec3 c = vec3(1.0), d = vec3(0.00, 0.33, 0.67);
     if (p.y > (1.0/7.0)) { c = vec3(1.0);           d = vec3(0.00, 0.10, 0.20); }
     if (p.y > (2.0/7.0)) { c = vec3(1.0);           d = vec3(0.30, 0.20, 0.20); }
-    if (p.y > (3.0/7.0)) { c = vec3(1.0,1.0,0.5);   d = vec3(0.80, 0.90, 0.30); }
-    if (p.y > (4.0/7.0)) { c = vec3(1.0,0.7,0.4);   d = vec3(0.00, 0.15, 0.20); }
-    if (p.y > (5.0/7.0)) { c = vec3(2.0,1.0,0.0);   d = vec3(0.50, 0.20, 0.25); }
+    if (p.y > (3.0/7.0)) { c = vec3(1.0,2.0,0.5);   d = vec3(0.280, 0.90, 0.30); }
+    if (p.y > (4.0/7.0)) { c = vec3(1.0,2.7,0.4);   d = vec3(0.20, 0.15, 0.20); }
+    if (p.y > (5.0/7.0)) { c = vec3(2.0,2.0,0.0);   d = vec3(0.20, 0.20, 0.25); }
     if (p.y > (6.0/7.0)) { c = vec3(2.0,1.0,1.0);   d = vec3(0.00, 0.25, 0.25); }
 
     // neon sweep through phase space
@@ -76,8 +76,8 @@ void main() {
     float shade = 0.5 + 0.5 * sqrt(4.0 * f * (1.0 - f));
 
     // wide glow around edges
-    float haloW = mix(0.20, 0.32, clamp(energy,0.0,1.0));
-    float glow  = pow(smoothstep(0.0, 0.5, dEdge), 6.0) * (0.65 + 0.55 * energy);
+    float haloW = mix(2.50, 0.32, clamp(energy,0.0,1.0));
+    float glow  = pow(smoothstep(0.0, 1.5, dEdge), 6.0) * (0.65 + 0.55 * energy);
     glow       *= smoothstep(0.0, haloW, dEdge);
 
     vec3 col = baseCol * (0.15 + 0.85 * shade);
@@ -90,12 +90,12 @@ void main() {
 
     // vignette & scanlines — IMPORTANT: use uv0 (static), not p (scrolled)
     float aspect = R.x / R.y;
-    float vignR  = length((uv0 - 0.5) * vec2(aspect, 1.0));
-    float vig    = smoothstep(0.55, 1.25, vignR);  // edges darker, center bright
+    float vignR  = (energy * 2.25) * length((uv0 - 0.35) * vec2(aspect, 1.0));
+    float vig    = smoothstep(0.055, 1.25, vignR);  // edges darker, center bright
 
     float scan   = 0.96 + 0.04 * sin(gl_FragCoord.y * 3.14159);
 
-    col *= vig * scan;
+    col *= vig * 0.1 * scan;
 
     // contrast & gamma
     col = clamp((col - 0.5) * (1.2 + 0.8 * pc.cc1) + 0.5, 0.0, 1.0);
