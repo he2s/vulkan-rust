@@ -533,6 +533,8 @@ struct PushConstants {
     cc74: f32,
     note_count: u32,
     last_note: u32,
+    render_w: u32,
+    render_h: u32,
 }
 
 // ==================== Vulkan Graphics ====================
@@ -1705,7 +1707,7 @@ impl App {
     }
 
     // OPTIMIZATION: Use frame state snapshot instead of multiple locks
-    fn get_push_constants(&self, elapsed: f32) -> PushConstants {
+    fn get_push_constants(&self, elapsed: f32, w: u32, h: u32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
 
         let note_velocity = if frame_state.midi.note_count > 0 {
@@ -1731,6 +1733,8 @@ impl App {
             cc74: blended_cc74,
             note_count: frame_state.midi.note_count,
             last_note: frame_state.midi.last_note as u32,
+            render_w: w,
+            render_h: h,
         }
     }
 
@@ -1835,7 +1839,8 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let (Some(start_time), Some(window)) = (&self.start_time, &self.window) {
                     let elapsed = start_time.elapsed().as_secs_f32();
-                    let push_constants = self.get_push_constants(elapsed);
+                    let size = window.inner_size();
+                    let push_constants = self.get_push_constants(elapsed, size.width.max(1), size.height.max(1));
 
                     if let Some(gfx) = &mut self.gfx {
                         match unsafe { gfx.draw(&push_constants) } {
