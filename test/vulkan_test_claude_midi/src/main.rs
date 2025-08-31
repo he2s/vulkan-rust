@@ -705,19 +705,18 @@ impl Gfx {
         self.context.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.pipeline);
 
         // OPTIMIZATION: Only update dynamic state when changed
-        if Some(self.swapchain.extent) != self.state.current_extent {
-            let viewport = vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: self.swapchain.extent.width as f32,
-                height: self.swapchain.extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            };
-            self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
-            self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
-            self.state.current_extent = Some(self.swapchain.extent);
-        }
+        // Always set dynamic state once per command buffer (required by spec)
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.swapchain.extent.width as f32,
+            height: self.swapchain.extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
+        self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+
 
         // Push constants
         self.context.device.cmd_push_constants(
