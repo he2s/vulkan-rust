@@ -1,5 +1,4 @@
 #version 450
-// Flowing Wires (Vulkan port) — original by @kishimisu (CC BY-NC-SA 4.0)
 
 layout(push_constant) uniform PushConstants {
     float time;
