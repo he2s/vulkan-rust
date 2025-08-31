@@ -7,7 +7,7 @@ resizable = true
 
 [midi]
 enabled = true
-auto_connect = false 
+auto_connect = true
 port_name = "ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2 24:1"  # Uncomment to connect to specific MIDI device
 
 [graphics]
