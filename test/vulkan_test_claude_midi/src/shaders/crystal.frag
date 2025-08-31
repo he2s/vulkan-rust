@@ -1,112 +1,105 @@
 #version 450
+// Flowing Wires (Vulkan port) — original by @kishimisu (CC BY-NC-SA 4.0)
 
 layout(push_constant) uniform PushConstants {
     float time;
-    uint mouse_x;
-    uint mouse_y;
-    uint mouse_pressed;
-    float note_velocity;
-    float pitch_bend;
-    float cc1;
-    float cc74;
-    uint note_count;
-    uint last_note;
+    uint  mouse_x;
+    uint  mouse_y;
+    uint  mouse_pressed;
+    float note_velocity; // MIDI velocity or blended RMS
+    float pitch_bend;    // [-1,1] or blended low band
+    float cc1;           // mid band
+    float cc74;          // high band
+    uint  note_count;
+    uint  last_note;
+
 } pc;
 
-layout(location = 0) in vec2 fragCoord;
+layout(location = 0) in  vec2 fragCoord;   // OK if unused
 layout(location = 0) out vec4 fragColor;
 
-// Simple sphere distance function
-float sphereSDF(vec3 p, float radius) {
-    return length(p) - radius;
+mat2 rot(float a) {
+    float c = cos(a), s = sin(a);
+    return mat2(c, -s, s, c);
 }
 
-// Basic lighting
-vec3 calculateNormal(vec3 p, float radius) {
-    const float eps = 0.001;
-    return normalize(vec3(
-        sphereSDF(p + vec3(eps, 0, 0), radius) - sphereSDF(p - vec3(eps, 0, 0), radius),
-        sphereSDF(p + vec3(0, eps, 0), radius) - sphereSDF(p - vec3(0, eps, 0), radius),
-        sphereSDF(p + vec3(0, 0, eps), radius) - sphereSDF(p - vec3(0, 0, eps), radius)
-    ));
+// Distance/color helper (ported from the s(p) macro)
+float wf_s(in vec3 p, inout vec4 accum, float T, float t) {
+    vec3 q = p;
+
+    // “Torus-ish” distance
+    float d = length(vec2(length(q.xy + vec2(0.5)) - 0.5, q.z)) - 0.01;
+
+    // Truchet: quantize angle and rotate tile frame
+    float ang = atan(q.y, q.x);
+    float k   = round((ang - T) * 3.8) / 3.8 + T;
+    q.yx = rot(k) * q.yx;
+    q.x -= 0.5;
+
+    // Color/falloff (original form)
+    vec4 col = (sin(t + T) * 0.1 + 0.1) * (1.0 + cos(t + T * 0.5 + vec4(0.0, 1.0, 2.0, 0.0)));
+    float falloff = 0.5 + pow(length(q) * 50.0, 1.3);
+    accum += col / falloff;
+
+    return d;
 }
 
 void main() {
-    vec2 uv = fragCoord;
+    // --- Interactivity mappings ---
+    float speed    = 1.0 + pc.cc1 * 1.5 + pc.note_velocity * 0.5;  // mid/velocity -> speed
+    float hueShift = pc.cc74;                                       // highs -> tint
+    float wobble   = pc.pitch_bend;                                 // bend -> camera wobble
+    float T        = pc.time * speed;
 
-    // Camera setup
-    vec3 ro = vec3(0.0, 0.0, 3.0); // Ray origin
-    vec3 rd = normalize(vec3(uv, -1.0)); // Ray direction
+    // iResolution-style values
+    vec2 Rxy = vec2(float(max(1000, 1u)), float(max(1000, 1u)));
+    vec3 R   = vec3(Rxy, 1.0);
 
-    // Sphere properties - react to audio/MIDI
-    float baseRadius = 0.8;
-    float pulseRadius = baseRadius + pc.note_velocity * 0.3; // React to MIDI velocity
-    pulseRadius += pc.cc1 * 0.2; // React to audio mid frequencies
+    // Shadertoy coordinate setup:
+    // F starts as pixel coords, then center & scale: F += F - R.xy
+    vec2 F = gl_FragCoord.xy;
+    F = F + (F - Rxy);
 
-    // Sphere position - slight movement based on pitch bend
-    vec3 spherePos = vec3(pc.pitch_bend * 0.3, sin(pc.time * 2.0) * 0.1, 0.0);
-
-    // Raymarching
+    vec4 O = vec4(0.0);   // color accumulator
     float t = 0.0;
-    const int MAX_STEPS = 64;
+
+    // Raymarch — same structure as original (more iterations for quality)
+    const int MAX_STEPS = 28;
     const float MAX_DIST = 100.0;
-    const float EPSILON = 0.001;
 
-    for(int i = 0; i < MAX_STEPS; i++) {
-        vec3 p = ro + rd * t;
-        float d = sphereSDF(p - spherePos, pulseRadius);
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        // Direction from rotated screen coords
+        vec2 Fr = rot(t * 0.10) * F;
+        vec3 rd = normalize(vec3(Fr, R.y));
+        vec3 p  = t * rd;
 
-        if(d < EPSILON || t > MAX_DIST) break;
+        // Camera motion (time + pitch wobble)
+        p.xz *= rot(T / 4.0 + wobble * 0.5);
+        p.yz *= rot(T / 3.0 + wobble * 0.2);
+        p.x  += T;
+
+        // Domain repetition in three orientations
+        vec3 pf = fract(p) - 0.5;
+        float d = wf_s(pf, O, T, t);
+        d = min(d, wf_s(vec3(-pf.y, pf.z, pf.x), O, T, t));
+        d = min(d, wf_s(-pf.zxy, O, T, t));
+
         t += d;
+        if (t > MAX_DIST) break;
     }
 
-    vec3 color = vec3(0.0);
+    // Map accumulator to RGB and apply interactive tints
+    vec3 base = O.rgb;
 
-    if(t < MAX_DIST) {
-        // Hit the sphere
-        vec3 p = ro + rd * t;
-        vec3 normal = calculateNormal(p - spherePos, pulseRadius);
+    // Highs add warm tint; velocity adds glow
+    base *= mix(vec3(1.0), vec3(1.0, 0.8 + 0.2 * hueShift, 0.6 + 0.4 * hueShift), 0.35);
+    base += pc.note_velocity * 0.25;
 
-        // Basic Phong lighting
-        vec3 lightPos = vec3(2.0, 2.0, 2.0);
-        vec3 lightDir = normalize(lightPos - p);
-        vec3 viewDir = normalize(-rd);
-        vec3 reflectDir = reflect(-lightDir, normal);
+    // Mouse halo
+    vec2 m  = vec2(float(pc.mouse_x), float(pc.mouse_y));
+    float mg = exp(-length(gl_FragCoord.xy - m) / 200.0) * (pc.mouse_pressed != 0u ? 0.5 : 0.2);
+    base += mg;
 
-        // Base color - react to audio frequencies
-        vec3 baseColor = vec3(
-            0.3 + pc.cc74 * 0.7,  // High frequencies affect red
-            0.5 + pc.cc1 * 0.5,   // Mid frequencies affect green
-            0.8 + sin(pc.time + pc.note_velocity * 10.0) * 0.2 // Blue with time + MIDI
-        );
-
-        // Diffuse lighting
-        float diff = max(dot(normal, lightDir), 0.0);
-
-        // Specular lighting
-        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
-
-        // Rim lighting based on note count
-        float rim = 1.0 - max(dot(viewDir, normal), 0.0);
-        rim = pow(rim, 2.0) * (pc.note_count > 0u ? 1.0 : 0.3);
-
-        color = baseColor * diff + vec3(1.0) * spec + vec3(0.2, 0.4, 1.0) * rim;
-
-        // Add some glow based on audio level
-        color += baseColor * pc.note_velocity * 0.5;
-    }
-    else {
-        // Background - simple gradient
-        color = mix(
-            vec3(0.1, 0.1, 0.2),
-            vec3(0.0, 0.0, 0.1),
-            length(uv) * 0.5
-        );
-
-        // Add stars based on audio
-        float stars = step(0.99, sin(uv.x * 100.0) * cos(uv.y * 100.0));
-        color += stars * pc.cc74 * vec3(1.0);
-    }
-
-    fragColor = vec4(color, 1.0);
+    // Simple gamma
+    fragColor = vec4(pow(max(base, 0.0), vec3(1.7545)), 1.0);
 }
