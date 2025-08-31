@@ -1,104 +1,105 @@
 #version 450
+/*
+  Neon Palettes — adapted from Inigo Quilez "Palettes" (MIT)
+  https://iquilezles.org/articles/palettes
+*/
 
 layout(push_constant) uniform PushConstants {
     float time;
     uint  mouse_x;
     uint  mouse_y;
     uint  mouse_pressed;
-    float note_velocity; // MIDI velocity or blended RMS
-    float pitch_bend;    // [-1,1] or blended low band
-    float cc1;           // mid band
-    float cc74;          // high band
+    float note_velocity;
+    float pitch_bend;
+    float cc1;
+    float cc74;
     uint  note_count;
     uint  last_note;
-
+    uint  render_w;
+    uint  render_h;
 } pc;
 
-layout(location = 0) in  vec2 fragCoord;   // OK if unused
+layout(location = 0) in  vec2 fragCoord; // unused; keeps interface
 layout(location = 0) out vec4 fragColor;
 
-mat2 rot(float a) {
-    float c = cos(a), s = sin(a);
-    return mat2(c, -s, s, c);
-}
-
-// Distance/color helper (ported from the s(p) macro)
-float wf_s(in vec3 p, inout vec4 accum, float T, float t) {
-    vec3 q = p;
-
-    // “Torus-ish” distance
-    float d = length(vec2(length(q.xy + vec2(0.5)) - 0.5, q.z)) - 0.01;
-
-    // Truchet: quantize angle and rotate tile frame
-    float ang = atan(q.y, q.x);
-    float k   = round((ang - T) * 3.8) / 3.8 + T;
-    q.yx = rot(k) * q.yx;
-    q.x -= 0.5;
-
-    // Color/falloff (original form)
-    vec4 col = (sin(t + T) * 0.1 + 0.1) * (1.0 + cos(t + T * 0.5 + vec4(0.0, 1.0, 2.0, 0.0)));
-    float falloff = 0.5 + pow(length(q) * 50.0, 1.3);
-    accum += col / falloff;
-
-    return d;
+vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+    return a + b * cos(6.2831853 * (c * t + d));
 }
 
 void main() {
-    // --- Interactivity mappings ---
-    float speed    = 0.10 + pc.cc1 * 0.5 + pc.note_velocity * 0.5;  // mid/velocity -> speed
-    float hueShift = pc.cc74;                                       // highs -> tint
-    float wobble   = pc.pitch_bend;                                 // bend -> camera wobble
-    float T        = pc.time * speed;
+    vec2 R    = vec2(float(max(1000,1u)), float(max(1000,1u)));
+    vec2 uv0  = gl_FragCoord.xy / R;   // STATIC normalized coords (for vignette/scan)
+    vec2 p    = uv0;                   // WORKING coords (we'll scroll/warp these)
 
-    // iResolution-style values
-    vec2 Rxy = vec2(float(max(1000, 1u)), float(max(1000, 1u)));
-    vec3 R   = vec3(Rxy, 1.0);
+    // ---- interactivity ----
+    float speed   = 1.0 + pc.cc1 * 1.2 + pc.note_velocity * 0.45;
+    float bendX   = 0.22 * pc.pitch_bend;
+    float hueCtl  = pc.cc74;
+    float energy  = clamp(pc.note_velocity * 1.6, 0.0, 1.6);
+    vec2  mN      = vec2(float(pc.mouse_x), float(pc.mouse_y)) / R;
+    float pressed = (pc.mouse_pressed != 0u) ? 1.0 : 0.0;
 
-    // Shadertoy coordinate setup:
-    // F starts as pixel coords, then center & scale: F += F - R.xy
-    vec2 F = gl_FragCoord.xy;
-    F = F + (F - Rxy);
+    // horizontal scroll + bend
+    p.x += 0.012 * pc.time * speed + bendX;
 
-    vec4 O = vec4(0.0);   // color accumulator
-    float t = 0.0;
+    // slight vertical warp near mouse (only when pressed)
+    float dmy = p.y - mN.y;
+    p.y += pressed * 0.028 * dmy * exp(-abs(dmy) * 40.0);
 
-    // Raymarch — same structure as original (more iterations for quality)
-    const int MAX_STEPS = 5;
-    const float MAX_DIST = 10.0;
+    // ---- neon palette bands ----
+    vec3 a = vec3(0.40, 0.38, 0.45);
+    vec3 b = vec3(0.70, 0.75, 0.85) * (1.0 + 0.35 * energy);
 
-    for (int i = 0; i < MAX_STEPS; ++i) {
-        // Direction from rotated screen coords
-        vec2 Fr = rot(t * 0.10) * F;
-        vec3 rd = normalize(vec3(Fr, R.y));
-        vec3 p  = t * rd;
+    vec3 c = vec3(1.0), d = vec3(0.00, 0.33, 0.67);
+    if (p.y > (1.0/7.0)) { c = vec3(1.0);           d = vec3(0.00, 0.10, 0.20); }
+    if (p.y > (2.0/7.0)) { c = vec3(1.0);           d = vec3(0.30, 0.20, 0.20); }
+    if (p.y > (3.0/7.0)) { c = vec3(1.0,1.0,0.5);   d = vec3(0.80, 0.90, 0.30); }
+    if (p.y > (4.0/7.0)) { c = vec3(1.0,0.7,0.4);   d = vec3(0.00, 0.15, 0.20); }
+    if (p.y > (5.0/7.0)) { c = vec3(2.0,1.0,0.0);   d = vec3(0.50, 0.20, 0.25); }
+    if (p.y > (6.0/7.0)) { c = vec3(2.0,1.0,1.0);   d = vec3(0.00, 0.25, 0.25); }
 
-        // Camera motion (time + pitch wobble)
-        p.xz *= rot(T / 4.0 + wobble * 0.5);
-        p.yz *= rot(T / 3.0 + wobble * 0.2);
-        p.x  += T;
+    // neon sweep through phase space
+    d += hueCtl * vec3(0.00, 0.18, 0.28) + 0.05 * sin(vec3(0.9,1.1,1.3) * (pc.time * 0.6));
 
-        // Domain repetition in three orientations
-        vec3 pf = fract(p) - 0.5;
-        float d = wf_s(pf, O, T, t);
-        d = min(d, wf_s(vec3(-pf.y, pf.z, pf.x), O, T, t));
-        d = min(d, wf_s(-pf.zxy, O, T, t));
+    vec3 baseCol = pal(p.x, a, b, c, d);
 
-        t += d;
-        if (t > MAX_DIST) break;
-    }
+    // ---- band shaping ----
+    float bands = p.y * 7.0;
+    float f     = fract(bands);
+    float dEdge = 0.5 - abs(f - 0.5);        // 0 at edges, 0.5 at band center
 
-    // Map accumulator to RGB and apply interactive tints
-    vec3 base = O.rgb;
+    // bright central tube (reacts to energy)
+    float lineW = mix(0.045, 0.11, clamp(energy,0.0,1.0));
+    float line  = smoothstep(0.0, lineW, dEdge);
 
-    // Highs add warm tint; velocity adds glow
-    base *= mix(vec3(1.0), vec3(1.0, 0.8 + 0.2 * hueShift, 0.6 + 0.4 * hueShift), 0.35);
-    base += pc.note_velocity * 0.25;
+    // soft interior shading (as IQ)
+    float shade = 0.5 + 0.5 * sqrt(4.0 * f * (1.0 - f));
 
-    // Mouse halo
-    vec2 m  = vec2(float(pc.mouse_x), float(pc.mouse_y));
-    float mg = exp(-length(gl_FragCoord.xy - wobble * m) / 200.0) * (pc.mouse_pressed != 0u ? 0.5 : 0.2);
-    base += mg;
+    // wide glow around edges
+    float haloW = mix(0.20, 0.32, clamp(energy,0.0,1.0));
+    float glow  = pow(smoothstep(0.0, 0.5, dEdge), 6.0) * (0.65 + 0.55 * energy);
+    glow       *= smoothstep(0.0, haloW, dEdge);
 
-    // Simple gamma
-    fragColor = vec4(pow(max(base, 0.0), vec3(2.7545)), 1.0);
+    vec3 col = baseCol * (0.15 + 0.85 * shade);
+    col += baseCol * line * 1.25;
+    col += baseCol * glow;
+
+    // mouse hotspot (use static coords so it never disappears)
+    float spot = exp(-dot(gl_FragCoord.xy - mN * R, gl_FragCoord.xy - mN * R) / 1800.0);
+    col += baseCol * spot * (0.20 + 0.45 * pressed);
+
+    // vignette & scanlines — IMPORTANT: use uv0 (static), not p (scrolled)
+    float aspect = R.x / R.y;
+    float vignR  = length((uv0 - 0.5) * vec2(aspect, 1.0));
+    float vig    = smoothstep(0.55, 1.25, vignR);  // edges darker, center bright
+
+    float scan   = 0.96 + 0.04 * sin(gl_FragCoord.y * 3.14159);
+
+    col *= vig * scan;
+
+    // contrast & gamma
+    col = clamp((col - 0.5) * (1.2 + 0.8 * pc.cc1) + 0.5, 0.0, 1.0);
+    col = pow(col, vec3(0.4545));
+
+    fragColor = vec4(col, 1.0);
 }
