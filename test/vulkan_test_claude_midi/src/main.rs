@@ -1,3 +1,5 @@
+mod osc;
+use osc::{OscManager, OscConfig, OscState}; // Add this import
 use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
@@ -79,6 +81,8 @@ pub struct Config {
     pub audio: AudioConfig,
     #[serde(default)]
     pub shader: ShaderConfig,
+    #[serde(default)]
+    pub osc: OscConfig, // Add this line
 }
 
 #[derive(Deserialize, Serialize)]
@@ -322,6 +326,7 @@ impl Default for MidiState {
 pub struct FrameState {
     pub midi: MidiState,
     pub audio_levels: AudioLevels,
+    pub osc: OscState, // Add this line
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -533,6 +538,8 @@ struct PushConstants {
     cc74: f32,
     note_count: u32,
     last_note: u32,
+    osc_ch1: f32,
+    osc_ch2: f32,
     render_w: u32,
     render_h: u32,
 }
@@ -1353,6 +1360,7 @@ pub struct InputManager {
     _midi_connection: Option<midir::MidiInputConnection<()>>,
     audio_state: Arc<Mutex<AudioState>>,
     _audio_stream: Option<cpal::Stream>,
+    osc_manager: OscManager, // Add this line
 }
 
 impl InputManager {
@@ -1362,6 +1370,13 @@ impl InputManager {
             _midi_connection: None,
             audio_state: Arc::new(Mutex::new(AudioState::new())),
             _audio_stream: None,
+            osc_manager: OscManager::new(OscConfig::default()),
+        }
+    }
+    pub fn setup_osc(&mut self, config: &OscConfig) {
+        self.osc_manager = OscManager::new(config.clone());
+        if let Err(e) = self.osc_manager.start() {
+            eprintln!("OSC setup failed: {}", e);
         }
     }
 
@@ -1375,8 +1390,8 @@ impl InputManager {
             let mut audio_state = self.audio_state.lock().unwrap();
             audio_state.analyze_and_get_levels()
         };
-
-        FrameState { midi, audio_levels }
+        let osc = self.osc_manager.get_state(); // Add this line
+        FrameState { midi, audio_levels, osc }
     }
 
     pub fn setup_midi(&mut self, config: &MidiConfig) {
@@ -1733,6 +1748,8 @@ impl App {
             cc74: blended_cc74,
             note_count: frame_state.midi.note_count,
             last_note: frame_state.midi.last_note as u32,
+            osc_ch1: frame_state.osc.channel1,  // Add this
+            osc_ch2: frame_state.osc.channel2,  // Add this
             render_w: w,
             render_h: h,
         }
@@ -1780,6 +1797,7 @@ impl ApplicationHandler for App {
 
         self.input_manager.setup_midi(&self.config.midi);
         self.input_manager.setup_audio(&self.config.audio);
+        self.input_manager.setup_osc(&self.config.osc);
 
         self.print_controls();
     }
