@@ -1,0 +1,26 @@
+[package]
+name = "vulkan-clear-latest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+# Vulkan + windowing (latest as of Aug 24, 2025)
+ash = { version = "0.38", default-features = false, features = ["linked"] }
+ash-window = "0.13"
+winit = "0.30"
+raw-window-handle = "0.6"
+
+#env_logger = "0.10"
+shaderc = { version = "0.8", features = ["build-from-source"] }  # Add this for runtime shader compilation
+midir = "0.10.2"
+
+clap = { version = "4.4", features = ["derive"] }  # New
+serde = { version = "1.0", features = ["derive"] }  # New
+toml = "0.8"  # New
+cpal = "0.15"
+rustfft = "6"
+rosc = "0.10"
