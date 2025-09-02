@@ -260,8 +260,29 @@ pub struct ShaderSources {
     pub fragment: String,
 }
 
+// Helper: best-effort file read
+fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
+    std::fs::read_to_string(p).ok()
+}
+
 impl ShaderSources {
     pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
+        // If SHADER_PRESET_DIR is set, try loading live from disk first (dev mode).
+        if let Ok(dir) = std::env::var("SHADER_PRESET_DIR") {
+            let (vfile, ffile) = match preset {
+                ShaderPreset::Torus   => ("fullscreen.vert", "gradient.frag"),
+                ShaderPreset::Terrain => ("terrain.vert",   "terrain.frag"),
+                ShaderPreset::Crystal => ("crystal.vert",   "crystal.frag"),
+                ShaderPreset::Custom  => return Err(anyhow!("Custom shader requires paths")),
+            };
+            let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
+            let fpath = std::path::Path::new(&dir).join("shaders").join(ffile);
+            if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
+                return Ok(Self { vertex: vs, fragment: fs });
+            }
+        }
+
+        // Fallback to embedded sources (release/default)
         match preset {
             ShaderPreset::Torus => Ok(Self {
                 vertex: include_str!("shaders/fullscreen.vert").to_string(),
@@ -447,7 +468,7 @@ impl AudioState {
         let fft_len = self.windowing_buffer.len().next_power_of_two().max(MIN_FFT_SIZE).min(MAX_FFT_SIZE);
         self.windowing_buffer.resize(fft_len, 0.0);
 
-        // Apply windowing function in-place
+        // Apply windowing function in-place (Hann with N-1)
         Self::apply_hann_window(&mut self.windowing_buffer);
 
         // Get or create cached FFT (MAJOR OPTIMIZATION)
@@ -467,10 +488,12 @@ impl AudioState {
     }
 
     fn apply_hann_window(buffer: &mut [f32]) {
-        let len = buffer.len() as f32;
+        let len = buffer.len();
+        let denom = (len.saturating_sub(1)).max(1) as f32;
         for (i, sample) in buffer.iter_mut().enumerate() {
-            let window = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / len).cos());
-            *sample *= window;
+            let n = i as f32;
+            let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * n / denom).cos());
+            *sample *= w;
         }
     }
 
@@ -598,12 +621,13 @@ pub struct Gfx {
     commands: VulkanCommands,
     sync: VulkanSync,
     state: VulkanState, // OPTIMIZATION: Track state to avoid redundant operations
+    vsync: bool,        // NEW: track vsync to recreate with same preference
 }
 
 impl Gfx {
-    pub unsafe fn new(window: &Window, shader_config: &ShaderConfig) -> Result<Self> {
+    pub unsafe fn new(window: &Window, shader_config: &ShaderConfig, vsync: bool) -> Result<Self> {
         let context = VulkanContext::new(window)?;
-        let swapchain = VulkanSwapchain::new(&context, window)?;
+        let swapchain = VulkanSwapchain::new(&context, window, vsync)?;
         let pipeline = VulkanPipeline::new(&context, &swapchain, shader_config)?;
         let commands = VulkanCommands::new(&context)?;
         let sync = VulkanSync::new(&context)?;
@@ -615,6 +639,7 @@ impl Gfx {
             commands,
             sync,
             state: VulkanState::default(),
+            vsync,
         })
     }
 
@@ -625,8 +650,8 @@ impl Gfx {
         self.pipeline.cleanup_framebuffers(&self.context.device);
         self.swapchain.cleanup(&self.context.device);
 
-        // Create new swapchain
-        self.swapchain = VulkanSwapchain::new(&self.context, window)?;
+        // Create new swapchain (preserve vsync preference)
+        self.swapchain = VulkanSwapchain::new(&self.context, window, self.vsync)?;
         self.pipeline.recreate_framebuffers(&self.context.device, &self.swapchain)?;
 
         // Reset cached state
@@ -690,6 +715,12 @@ impl Gfx {
         image_index: u32,
         push_constants: &PushConstants,
     ) -> Result<()> {
+        // RESET before re-recording (pool has RESET_COMMAND_BUFFER flag)
+        self.context.device.reset_command_buffer(
+            cmd_buffer,
+            vk::CommandBufferResetFlags::empty()
+        )?;
+
         self.context.device.begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())?;
 
         let clear_values = [vk::ClearValue {
@@ -713,8 +744,7 @@ impl Gfx {
         self.context.device.cmd_begin_render_pass(cmd_buffer, &render_pass_begin, vk::SubpassContents::INLINE);
         self.context.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.pipeline);
 
-        // OPTIMIZATION: Only update dynamic state when changed
-        // Always set dynamic state once per command buffer (required by spec)
+        // Always set dynamic state once per command buffer
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -725,7 +755,6 @@ impl Gfx {
         };
         self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
         self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
-
 
         // Push constants
         self.context.device.cmd_push_constants(
@@ -904,7 +933,7 @@ impl VulkanContext {
 
 // Implement VulkanSwapchain
 impl VulkanSwapchain {
-    unsafe fn new(context: &VulkanContext, window: &Window) -> Result<Self> {
+    unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);
         let surface_caps = context.surface_loader.get_physical_device_surface_capabilities(
             context.physical_device,
@@ -915,22 +944,24 @@ impl VulkanSwapchain {
             context.surface,
         )?;
 
-        let format = Self::choose_surface_format(&formats);
+        let chosen = Self::choose_surface_format(&formats);
+        let format = chosen.format;
         let extent = Self::choose_extent(&surface_caps, window);
         let image_count = Self::choose_image_count(&surface_caps);
+        let present_mode = Self::choose_present_mode(context, vsync);
 
         let create_info = vk::SwapchainCreateInfoKHR {
             surface: context.surface,
             min_image_count: image_count,
             image_format: format,
-            image_color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            image_color_space: chosen.color_space,
             image_extent: extent,
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: surface_caps.current_transform,
             composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-            present_mode: vk::PresentModeKHR::FIFO,
+            present_mode,
             clipped: vk::TRUE,
             ..Default::default()
         };
@@ -949,12 +980,29 @@ impl VulkanSwapchain {
         })
     }
 
-    fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::Format {
+    fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
         formats
             .iter()
             .find(|f| f.format == vk::Format::B8G8R8A8_SRGB && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
-            .map(|f| f.format)
-            .unwrap_or(formats[0].format)
+            .copied()
+            .unwrap_or_else(|| formats[0])
+    }
+
+    unsafe fn choose_present_mode(context: &VulkanContext, vsync: bool) -> vk::PresentModeKHR {
+        if vsync {
+            return vk::PresentModeKHR::FIFO; // always available
+        }
+        let modes = context
+            .surface_loader
+            .get_physical_device_surface_present_modes(context.physical_device, context.surface)
+            .unwrap_or_default();
+        if modes.contains(&vk::PresentModeKHR::MAILBOX) {
+            vk::PresentModeKHR::MAILBOX
+        } else if modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+            vk::PresentModeKHR::IMMEDIATE
+        } else {
+            vk::PresentModeKHR::FIFO
+        }
     }
 
     fn choose_extent(caps: &vk::SurfaceCapabilitiesKHR, window: &Window) -> vk::Extent2D {
@@ -1133,8 +1181,8 @@ impl VulkanPipeline {
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo {
             polygon_mode: vk::PolygonMode::FILL,
-            cull_mode: vk::CullModeFlags::BACK,
-            front_face: vk::FrontFace::CLOCKWISE,
+            cull_mode: vk::CullModeFlags::NONE, // safer for fullscreen triangle
+            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
             line_width: 1.0,
             ..Default::default()
         };
@@ -1297,10 +1345,10 @@ impl VulkanCommands {
     }
 
     fn get_current_buffer(&self) -> vk::CommandBuffer {
-        let mut frame_index = self.frame_index.borrow_mut();
-        let cmd_buffer = self.buffers[*frame_index % 2];
-        *frame_index += 1;
-        cmd_buffer
+        let mut idx = self.frame_index.borrow_mut();
+        let cmd = self.buffers[*idx % self.buffers.len()];
+        *idx = (*idx + 1) % self.buffers.len();
+        cmd
     }
 }
 
@@ -1788,7 +1836,7 @@ impl ApplicationHandler for App {
 
         let window = event_loop.create_window(attributes).expect("Failed to create window");
         let gfx = unsafe {
-            Gfx::new(&window, &self.config.shader).expect("Failed to initialize Vulkan")
+            Gfx::new(&window, &self.config.shader, self.config.graphics.vsync).expect("Failed to initialize Vulkan")
         };
 
         self.window = Some(window);
