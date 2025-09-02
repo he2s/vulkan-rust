@@ -1,5 +1,17 @@
 #version 450
 
+// ---------------- Optional inputs (uncomment if you bind them) ----------------
+// layout(set=0, binding=0) uniform sampler2D uBloom; // blurred bloom chain
+// #define APPLY_BLOOM
+// layout(set=0, binding=1) uniform sampler2D uScene; // downsampled scene buffer
+// #define USE_SCENE_TEX
+// Integer downsample factor used when writing uScene (matches your kScreenDownsample)
+#define SCREEN_DOWNSAMPLE 1
+
+// How strongly to overlay the bands on top of the composite (0..1)
+#define BANDS_WEIGHT 2.85
+
+// ---------------- Push constants / IO ----------------
 layout(push_constant) uniform PushConstants {
     float time; uint mouse_x; uint mouse_y; uint mouse_pressed;
     float note_velocity; float pitch_bend; float cc1; float cc74;
@@ -7,117 +19,166 @@ layout(push_constant) uniform PushConstants {
     uint  render_w; uint render_h;
 } pc;
 
-layout(location=0) in vec2 frag_uv;
-layout(location=1) in vec2 frag_screen_pos;
+layout(location=0) in vec2 frag_uv;          // 0..1
+layout(location=1) in vec2 frag_screen_pos;  // optional
 layout(location=0) out vec4 out_color;
 
-const float PI=3.14159265359;
-const float TAU=6.28318530718;
+// ---------------- Helpers ----------------
+#define PI 3.1415926
+#define ROOT2 1.41421356237
+float saturate(float x){ return clamp(x, 0.0, 1.0); }
+vec3  saturate(vec3  x){ return clamp(x, 0.0, 1.0); }
+float hash11(float n){ return fract(sin(n*104729.0)*43758.5453123); }
+float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
 
-// ---------- tiny helpers (cheap!) ----------
-mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
-float sinesm(vec2 p){ return sin(p.x)*sin(p.y); }     // cheap noise kernel
-float fbm3(vec2 p){                                     // 3 octaves only
-    float f=0.0, a=0.5;
-    f += a*sinesm(p);          p = rot(1.5708)*p*1.8 + 0.73; a*=0.5;
-    f += a*sinesm(p);          p = rot(1.5708)*p*1.8 + 0.37; a*=0.5;
-    f += a*sinesm(p);
-    return f;
+// ---------------- Palettes (original) ----------------
+vec3 palette1(float x){ float v = pow(sin(PI*x), 2.0); return v * vec3(1.0, 0.5*v, 0.5); }
+vec3 palette2(float x){ float v = pow(sin(PI*x), 2.0); return v * vec3(0.5*v, 1.0*v, 0.25); }
+vec3 palette3(float x){ float v = pow(sin(PI*x), 2.0); return v * vec3(1.0, 0.5*v, 0.25*v); }
+vec3 palette4(float x){ float v = pow(sin(PI*x), 2.0); return v * vec3(0.5, 0.75*v, 0.5); }
+vec3 getPalette(int idx, float x){
+    if(idx==0) return palette1(x);
+    if(idx==1) return palette2(x);
+    if(idx==2) return palette3(x);
+    return palette4(x);
 }
 
-// sine palette (fast, vivid)
-vec3 pal(float h, vec3 a, vec3 b, vec3 c, vec3 d){
-    return a + b * cos(TAU*(c*h + d));
+// ---------------- Vignette (same math) ----------------
+float Vignette(vec2 fragCoord, vec2 iResolution)
+{
+    const float kVignetteStrength = 0.5;
+    const float kVignetteScale    = 0.6;
+    const float kVignetteExponent = 3.0;
+
+    vec2 uv = fragCoord / iResolution;
+    uv.x = (uv.x - 0.5) * (iResolution.x / iResolution.y) + 0.5;
+
+    float x = 2.0 * (uv.x - 0.5);
+    float y = 2.0 * (uv.y - 0.5);
+    float dist = sqrt(x*x + y*y) / ROOT2;
+
+    float ring = max(0.0, 1.0 - pow(dist * kVignetteScale, kVignetteExponent));
+    return mix(1.0, ring, kVignetteStrength);
 }
 
-void main(){
-    vec2 uv = (frag_uv - 0.5) * 2.0;
-    float aspect = float(pc.render_w)/float(pc.render_h);
-    uv.x *= aspect;
+// ---------------- Overlapped/shrinking bands ----------------
+//
+// - Vertical overlap: Gaussian row masks (sigma grows with audio)
+// - Horizontal shrink: each band gets a random width gate that tightens with audio
+// - Scroll: pitch bend + mouse + audio wobble
+//
+vec3 renderBandsOverlapped(vec2 uv, vec2 iResolution)
+{
+    float audio = saturate((pc.note_velocity + pc.osc_ch1 + pc.osc_ch2) * 0.5);
+    float t     = pc.time;
+    bool  mdown = (pc.mouse_pressed != 0u);
 
-    float t = pc.time;
-    float audio = (pc.note_velocity + pc.osc_ch1 + pc.osc_ch2) * 0.5;
-
-    // Mouse drift (branch is fine; taken rarely)
-    vec2 m = vec2(0.0);
-    if(pc.mouse_pressed != 0u){
-        m = vec2(float(pc.mouse_x)/float(pc.render_w), float(pc.mouse_y)/float(pc.render_h));
-        m = (m - 0.5) * 2.0; m.x *= aspect;
+    // Global horizontal scroll
+    float xShift = 0.20*pc.pitch_bend + 0.08*audio*sin(t*2.1);
+    if(mdown){
+        xShift += (float(pc.mouse_x)/max(iResolution.x,1.0) - 0.5) * 0.6;
     }
 
-    // ---------- domain warp (2 passes) ----------
-    // Less math than before; still swirly
-    float swirl = 0.45 + 0.9*audio;                     // strength with audio
-    vec2 p = uv - 0.22*m;
+    // Band layout
+    const int NBANDS = 10;                           // number of rows
+    float baseH   = 1.0/float(NBANDS);              // base row height
+    float sigma   = 0.5 * baseH * mix(0.36, 0.80, audio); // vertical Gaussian width => more audio = more overlap
+    float rate    = mix(0.5, 6.0, audio);           // how fast random widths change
 
-    // Warp #1
-    float a1 = t*0.28 + pc.pitch_bend*0.7;
-    vec2 q1 = p*rot(a1);
-    vec2 g1 = vec2( fbm3(q1*1.25), fbm3(q1*1.65) );
-    vec2 v1 = vec2(-g1.y, g1.x);                        // curl-ish
-    p += normalize(v1 + 1e-4) * (0.24*swirl);
+    // Note salt to vary palettes per note
+    float noteSalt   = (pc.note_count>0u ? float(pc.last_note)/127.0 : 0.37);
 
-    // Warp #2 (lighter)
-    float a2 = t*0.17 - pc.pitch_bend*0.5;
-    vec2 q2 = p*rot(a2);
-    float g2 = fbm3(q2*1.1);
-    p += vec2(g2, -g2) * (0.10*swirl);
+    vec3 accum = vec3(0.0);
+    float aSum = 0.0;
 
-    // ---------- dye pattern (radial bands + diffusion soften) ----------
-    float r = length(p);
-    float bands = 0.5 + 0.5*sin((10.0 + 9.0*audio)*r - t*1.8 + 2.4*fbm3(p*0.9));
-    float bleed = 0.5 + 0.5*fbm3(p*2.0 - t*0.12);
-    float ink = mix(bands, smoothstep(0.0, 1.0, bands), 0.5*bleed);
+    for(int i=0;i<NBANDS;i++){
+        float fi = float(i);
 
-    // ---------- palettes (with surprises) ----------
-    // Base hue from last_note; drift with time & audio
-    float baseHue = (pc.note_count>0u ? float(pc.last_note)/127.0 : 0.36);
-    float hue = baseHue + 0.06*t + 0.09*audio + 0.06*fbm3(p*0.6);
+        // Row center with tiny jitter that breathes with audio
+        float jitter = (hash11(fi*17.0 + floor(t*1.3)) - 0.5) * baseH * 0.35 * audio;
+        float center = (fi + 0.5)*baseH + jitter;
 
-    // Two fast palettes: soft neon vs. "acid flip" (poster shock)
-    vec3 colSoft = pal(hue,
-    vec3(0.44,0.42,0.46),          // a
-    vec3(0.56,0.55,0.60),          // b
-    vec3(1.00,0.97,0.93),          // c
-    vec3(0.00,0.33,0.67)           // d
-    );
+        // Vertical Gaussian mask (always overlapping)
+        float dy = (uv.y - center)/sigma;
+        float maskY = exp(-0.5*dy*dy);             // 1 at center, falls off with sigma
 
-    vec3 colAcid = pal(hue + 0.15,
-    vec3(0.10,0.08,0.12),
-    vec3(1.15,1.10,1.05),
-    vec3(1.00,1.00,1.00),
-    vec3(0.05,0.38,0.72)
-    );
+        // Random horizontal shrink gate:
+        // width varies in [minW, 1], where minW gets smaller with audio
+        float rnd  = hash11(fi*113.0 + floor(t*rate));
+        float minW = mix(0.75, 0.25, audio);       // more audio => narrower possible bands
+        float wX   = mix(1.0, mix(minW, 1.0, rnd), audio); // 1..minW
+        // Optional random x-center shift per band (keeps motion lively)
+        float cx   = fract(0.5 + 0.22*sin(t*1.7 + fi*1.23) + 0.18*pc.pitch_bend
+        + (hash11(fi*31.0) - 0.5)*0.2);
 
-    // Surprise trigger: brief flips driven by audio pulses + a slow timer.
-    // Cheap, branchless blending.
-    float pulse = smoothstep(0.35, 0.95, audio);
-    float timer = 0.5 + 0.5*sin(t*0.8 + float(pc.last_note));     // note-salted
-    float surprise = smoothstep(0.78, 0.92, timer) * pulse;        // 0..1 bursts
+        // Smooth horizontal rectangle gate
+        float ax   = abs(fract(uv.x + xShift) - cx);
+        float edge = 0.5*wX;                       // half-width in normalized coords
+        float soft = 0.02 + 0.08*(1.0 - wX);       // softer edge for thinner gates
+        float gateX= 1.0 - smoothstep(edge, edge+soft, ax); // 1 inside gate, 0 outside
 
-    // CCs: overall brightness & contrast feel
-    float bright = mix(0.85, 1.35, clamp(pc.cc74,0.0,1.0));
-    float gamma  = 1.0 + 0.7*clamp(pc.cc1,0.0,1.0);
+        // Per-band palette cycling
+        int pidx = int(mod(fi + floor(t*1.1) + floor(noteSalt*8.0), 4.0));
+        // Palette sampling still uses the scrolled x; it’s okay if the gate masks it later.
+        float px = fract(uv.x + xShift + 0.07*fi);
+        vec3 col;
+        if(pidx==0) col = palette1(px);
+        else if(pidx==1) col = palette2(px);
+        else if(pidx==2) col = palette3(px);
+        else             col = palette4(px);
 
-    // Tiny per-channel coordinate offsets for prismatic sparkle (very cheap)
-    float sep = 0.010 + 0.012*audio;
-    float sR = ink + 0.12*fbm3((p*(1.0+sep))*1.05 + t*0.07);
-    float sG = ink;
-    float sB = ink + 0.12*fbm3((p*(1.0-sep))*1.05 - t*0.07);
+        // Approx to linear
+        col = pow(col, vec3(0.45454545));
 
-    vec3 palMix = mix(colSoft, colAcid, surprise);
-    vec3 col = palMix * vec3(sR, sG, sB) * bright;
+        // Row edge shaping (from your original)
+        float n = 1.0 - fract(uv.y*4.0)*2.0;
+        col *= sqrt(max(0.0, 1.0 - n*n));
 
-    // subtle “paper” grain in screen space
-    float gr = fract(sin(dot(frag_screen_pos.xy + t*55.0, vec2(12.9898,78.233)))*43758.5453) - 0.5;
-    col += gr * (0.06 + 0.18*clamp(pc.cc1,0.0,1.0));
+        // Composite this band
+        float a = maskY * gateX;
+        accum += col * a;
+        aSum  += a;
+    }
 
-    // vignette + musical flicker
-    float vig = smoothstep(1.55, 0.25, length(uv));
-    col *= mix(0.80, 1.50, vig);
-    col *= 1.0 + 0.18*audio*sin(t*92.0);
+    // Normalize to avoid blowout when many bands overlap
+    accum /= max(aSum, 0.7);
 
-    // finalize
-    col = pow(max(col, 0.0), vec3(gamma));
-    out_color = vec4(clamp(col, 0.0, 3.0), 1.0);
+    return accum;
+}
+
+// ---------------- Main ----------------
+void main(){
+    vec2 iResolution = vec2(float(pc.render_w), float(pc.render_h));
+    vec2 fragCoord   = frag_uv * iResolution;
+
+    vec3 rgb = vec3(0.0);
+
+    // Optional bloom contribution
+    #ifdef APPLY_BLOOM
+    rgb = texture(uBloom, frag_uv).rgb;
+    #endif
+
+    // Optional downsampled scene composite
+    #ifdef USE_SCENE_TEX
+    ivec2 ip = ivec2(floor(fragCoord));
+    rgb += texelFetch(uScene, ip / SCREEN_DOWNSAMPLE, 0).rgb * 0.6;
+    #endif
+
+    // Overlapped, horizontally shrinking bands (audio-reactive)
+    vec3 bands = renderBandsOverlapped(frag_uv, iResolution);
+    rgb = mix(rgb, rgb + bands, BANDS_WEIGHT); // additive-ish overlay
+
+    // Same shaping + vignette as your post pass
+    rgb  = saturate(rgb);
+    rgb  = pow(rgb, vec3(0.8));
+    rgb  = mix(vec3(0.1), vec3(0.9), rgb);
+    rgb *= Vignette(fragCoord, iResolution);
+    rgb  = saturate(rgb);
+
+    // Live CCs: brightness & gamma
+    float bright = mix(0.85, 1.55, saturate(pc.cc74));
+    float gammaC = 1.0 + 0.7*saturate(pc.cc1);
+    rgb = pow(max(rgb*bright, 0.0), vec3(gammaC));
+
+    out_color = vec4(clamp(rgb, 0.0, 3.0), 1.0);
 }
