@@ -40,21 +40,83 @@ float beat() {
 // vec4 tex1(vec2 uv){ return texture(iChannel1, uv); }
 // ...
 
-// ---------- Shadertoy entrypoint to be inserted ----------
-void mainImage(out vec4 fragColor, in vec2 fragCoord)
+float hash31( vec3 p ) // randomization function
 {
+    p = vec3( dot(p,vec3(127.1,311.7, 74.7)),
+    dot(p,vec3(269.5,183.3,246.1)),
+    dot(p,vec3(113.5,271.9,124.6)));
+
+    p = fract(sin(p)*43758.5453);
+
+    return fract(p.x + p.y + p.z);
+}
+
+
+float width = 0.1; // line width
+
+
+
+
+
+// ---------- Shadertoy entrypoint to be inserted ----------
     // ===== PASTE THE SHADERTOY BODY HERE =====
     // Keep its logic intact. It expects:
     //   - fragCoord in pixels
     //   - iTime, iResolution, iMouse, iChannelN (if used)
     //   - Any extra defines/macros remain fine
-    //
-    // Example placeholder:
-    vec2 uv = fragCoord / iResolution.xy;
-    vec3 col = vec3(uv, 0.5 + 0.5*sin(iTime));
-    // Make it a little audio-reactive by default:
-    col *= mix(0.85, 1.35, audioLevel());
-    fragColor = vec4(col, 1.0);
+
+    void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+int j;
+for(j=0;j<3;j+=1) // loop over rgb channels
+{
+    float t = iTime + 0.04*float(j);
+    vec2 pos = 2.*vec2(sin(t*0.5)+0.1*t,cos(t*0.5)+0.3*t); // movement
+    vec3 col = vec3(1.); // background
+
+    // Loop over parallax layers
+    for(float i=10.;i<17.; i+=0.75)
+    {
+        vec2 uv = pos+(0.2*sin(t)*sin(t)+0.5)*((20. - 0.7*i)*(fragCoord-.5*iResolution.xy)/iResolution.y);
+        vec2 gv = (fract(uv)-0.5);
+        vec2 id = floor(uv);
+        vec3 col2 = (vec3(1.0)*(11./(i+5.))); // change this to make line colors more interesting
+        float mask1 = 1.; // Used for hard edges
+        float mask2 = 1.; // used for glows / "shadows"
+
+        if (hash31(vec3(id.x,id.y,i))>0.75) // Intersections
+        {
+            float a1 = smoothstep(-0.01,0.01,width-(abs(gv.x)));
+            float b1 = smoothstep(-0.01,0.01,width-(abs(gv.y)));
+            float a2 = smoothstep(-0.3,0.3,width-(abs(gv.x)));
+            float b2 = smoothstep(-0.3,0.3,width-(abs(gv.y)));
+            mask1 = a1 + b1 - a1*b1;
+            mask2 = a2 + b2 - a2*b2;
+        }
+        else // Diagonals
+        {
+            gv.x *= (float(hash31(vec3(i,id.x,id.y))>0.5)-0.5)*2.; // Flip half of them
+            mask1 = smoothstep(-0.01,0.01,width-abs(gv.x+gv.y-0.5*sign(gv.x+gv.y+0.01)));
+            mask2 = smoothstep(-0.3,0.3,width-abs(gv.x+gv.y-0.5*sign(gv.x+gv.y+0.01)));
+
+        }
+
+        // Output to screen
+        col = - 0.2*mask2 + 0.9*(col2.r*col2.r+col2.g*col2.g+col2.b*col2.b + col2*col2)*col2*mask1 + col*(1.-mask1);
+
+        // Enavble to show grid:
+        //if (abs(gv.x)>0.475 || abs(gv.y)>0.475) col.r=1.;
+
+    }
+    fragColor[j] = col[j];
+}
+
+    //// Example placeholder:
+    //vec2 uv = fragCoord / iResolution.xy;
+    //vec3 col = vec3(uv, 0.5 + 0.5*sin(iTime));
+    //// Make it a little audio-reactive by default:
+    //col *= mix(0.85, 1.35, audioLevel());
+    //fragColor = vec4(col, 1.0);
 }
 
 // ---------- Main ----------
