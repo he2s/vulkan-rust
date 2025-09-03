@@ -85,6 +85,17 @@ mat3 rotateY(float angle) {
     );
 }
 
+// Rotation around Y-axis
+mat3 rotateX(float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(
+    c, 0.0, s,
+    1.0, 0.0, 0.0,
+    -s, 0.0, c
+    );
+}
+
 // Distance field
 float map(vec3 p) {
     float k;
@@ -148,7 +159,8 @@ void main() {
     const float MAX_DIST = 20.0;
 
 
-    vec3 rotatedVector = rotateY(pc.pitch_bend * 1.0) * vec3(0.6, 0.25, 0.7);
+    vec3 rotatedVectorY = rotateY(pc.cc1 * 10.0) * vec3(0.6, 0.25, 0.7);
+    vec3 rotatedVector = rotateY(pc.pitch_bend * 10.0) * rotatedVectorY;
     for (float i = 0.0; i < ITER; i++) {
         // step a little slower so we can accumulate glow
         rayLength += max(INTERSECTION_PRECISION, abs(dist) * FUDGE_FACTOR);
