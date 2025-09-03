@@ -13,266 +13,438 @@ layout(location=1) in vec2 frag_screen_pos;  // optional
 layout(location=0) out vec4 out_color;
 
 // ---------------- Configuration ----------------
-#define AUDIO_AFFECTS_CIRCUIT
-#define AUDIO_AFFECTS_GLITCH
-#define TV_GLITCHES
-
-// Circuit raymarch settings
-#define ITS 8
-#define RAYMARCH_STEPS 50
+#define AUDIO_AFFECTS_ROTATION
+#define AUDIO_AFFECTS_COLOR
+#define AA 2  // Anti-aliasing samples
 
 // ---------------- Constants ----------------
 #define PI 3.14159265359
 #define TAU 6.283185307179586
+#define LOOP_DURATION 3.0
+#define TIME_OFFSET 0.0
+#define MOVE_COUNT 6.0
+
+// ---------------- Quaternion operations ----------------
+#define QUATERNION_IDENTITY vec4(0, 0, 0, 1)
+
+vec4 q_conj(vec4 q) {
+    return vec4(-q.xyz, q.w);
+}
+
+vec4 q_slerp(vec4 a, vec4 b, float t) {
+    float cosTheta = dot(a, b);
+    vec4 bb = b;
+
+    if (cosTheta < 0.0) {
+        bb = -b;
+        cosTheta = -cosTheta;
+    }
+
+    if (cosTheta > 0.995) {
+        return normalize(mix(a, bb, t));
+    }
+
+    float angle = acos(cosTheta);
+    float sinAngle = sin(angle);
+    float wa = sin((1.0 - t) * angle) / sinAngle;
+    float wb = sin(t * angle) / sinAngle;
+    return wa * a + wb * bb;
+}
+
+vec4 qmul(vec4 q1, vec4 q2) {
+    return vec4(
+    q1.w * q2.xyz + q2.w * q1.xyz + cross(q1.xyz, q2.xyz),
+    q1.w * q2.w - dot(q1.xyz, q2.xyz)
+    );
+}
+
+vec4 rotate_angle_axis(float angle, vec3 axis) {
+    float sn = sin(angle * 0.5);
+    float cs = cos(angle * 0.5);
+    return vec4(axis * sn, cs);
+}
+
+vec3 rotate_vector(vec3 v, vec4 q) {
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+// ---------------- Animation Moves ----------------
+vec4 moves[6];
+
+void initMoves() {
+    // Define the cube rotation sequence
+    moves[0] = vec4(1, 0, 0, 1);   // X axis, 1 turn
+    moves[1] = vec4(0, 1, 0, -1);  // Y axis, -1 turn
+    moves[2] = vec4(0, 0, 1, 1);   // Z axis, 1 turn
+    moves[3] = vec4(1, 0, 0, -1);  // X axis, -1 turn
+    moves[4] = vec4(0, 1, 0, 1);   // Y axis, 1 turn
+    moves[5] = vec4(0, 0, 1, -1);  // Z axis, -1 turn
+
+    #ifdef AUDIO_AFFECTS_ROTATION
+    // Modulate rotation speed with audio
+    float audioMod = (pc.note_velocity + pc.osc_ch1) * 0.5;
+    for(int i = 0; i < 6; i++) {
+        moves[i].w *= (1.0 + audioMod * 0.5);
+    }
+    #endif
+}
 
 // ---------------- Helpers ----------------
-float saturate(float x){ return clamp(x, 0.0, 1.0); }
-vec3  saturate(vec3  x){ return clamp(x, 0.0, 1.0); }
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+vec3 saturate(vec3 x) { return clamp(x, 0.0, 1.0); }
 
-// Get normalized audio intensity
 float getAudioIntensity() {
     return saturate((pc.note_velocity + pc.osc_ch1 + pc.osc_ch2) * 0.5);
 }
 
-// Hash functions for randomness
-float hash11(float n){ return fract(sin(n*104729.0)*43758.5453123); }
-float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
-
-// Noise functions from original
-float nse(float x) {
-    return fract(sin(x * 297.9712) * 90872.2961);
+void pR(inout vec2 p, float a) {
+    p = cos(a)*p + sin(a)*vec2(p.y, -p.x);
 }
 
-float nseI(float x) {
-    float fl = floor(x);
-    return mix(nse(fl), nse(fl + 1.0), smoothstep(0.0, 1.0, fract(x)));
+float vmin(vec3 v) {
+    return min(min(v.x, v.y), v.z);
 }
 
-float fbm(float x) {
-    return nseI(x) * 0.5 + nseI(x * 2.0) * 0.25 + nseI(x * 4.0) * 0.125;
+float vmax(vec3 v) {
+    return max(max(v.x, v.y), v.z);
 }
 
-// 2D rotation
-vec2 rotate(vec2 p, float a) {
-    return vec2(p.x * cos(a) - p.y * sin(a), p.x * sin(a) + p.y * cos(a));
+float fBox(vec3 p, vec3 b) {
+    vec3 d = abs(p) - b;
+    return length(max(d, vec3(0))) + vmax(min(d, vec3(0)));
 }
 
-// ---------------- Circuit Generation ----------------
-vec2 circuit(vec3 p) {
-    p = mod(p, 2.0) - 1.0;
-    float w = 1e38;
-    vec3 cut = vec3(1.0, 0.0, 0.0);
-    vec3 e1 = vec3(-1.0);
-    vec3 e2 = vec3(1.0);
-    float rnd = 0.23;
-    float pos, plane;
-    float fact = 0.9;
-    float j = 0.0;
+float smin(float a, float b, float k){
+    float f = clamp(0.5 + 0.5 * ((a - b) / k), 0., 1.);
+    return (1. - f) * a + f  * b - f * (1. - f) * k;
+}
 
-    #ifdef AUDIO_AFFECTS_CIRCUIT
+float smax(float a, float b, float k) {
+    return -smin(-a, -b, k);
+}
+
+// Easings
+float range(float vmin, float vmax, float value) {
+    return clamp((value - vmin) / (vmax - vmin), 0., 1.);
+}
+
+float almostIdentity(float x) {
+    return x*x*(2.0-x);
+}
+
+float circularOut(float t) {
+    return sqrt((2.0 - t) * t);
+}
+
+// Spectrum palette
+vec3 pal( in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d ) {
+    return a + b*cos( 6.28318*(c*t+d) );
+}
+
+vec3 spectrum(float n) {
+    vec3 baseColor = pal( n, vec3(0.5,0.5,0.5),vec3(0.5,0.5,0.5),vec3(1.0,1.0,1.0),vec3(0.0,0.33,0.67) );
+
+    #ifdef AUDIO_AFFECTS_COLOR
+    // Audio modulates the color intensity and hue
     float audio = getAudioIntensity();
-    // Audio affects the circuit complexity
-    fact = mix(0.9, 0.7, audio * 0.5);
+    float hueShift = audio * 0.2 + pc.pitch_bend * 0.1;
+    baseColor = pal( n + hueShift, vec3(0.5,0.5,0.5),vec3(0.5+audio*0.2,0.5,0.5),vec3(1.0,1.0,1.0),vec3(0.0,0.33,0.67) );
+
+    // MIDI note affects color tinting
+    if(pc.note_count > 0u) {
+        float noteTint = float(pc.last_note) / 127.0;
+        vec3 tintColor = vec3(
+        sin(noteTint * PI),
+        sin(noteTint * PI + PI/3.0),
+        sin(noteTint * PI + 2.0*PI/3.0)
+        );
+        baseColor = mix(baseColor, tintColor, pc.note_velocity * 0.3);
+    }
     #endif
 
-    for(int i = 0; i < ITS; i++) {
-        pos = mix(dot(e1, cut), dot(e2, cut), (rnd - 0.5) * fact + 0.5);
-        plane = dot(p, cut) - pos;
-        if(plane > 0.0) {
-            e1 = mix(e1, vec3(pos), cut);
-            rnd = fract(rnd * 9827.5719);
-            cut = cut.yzx;
-        }
-        else {
-            e2 = mix(e2, vec3(pos), cut);
-            rnd = fract(rnd * 15827.5719);
-            cut = cut.zxy;
-        }
-        j += step(rnd, 0.2);
-        w = min(w, abs(plane));
-    }
-    return vec2(j / float(ITS - 1), w);
+    return baseColor;
 }
 
-float scene(vec3 p) {
-    vec2 cir = circuit(p);
+// rotate on axis
+vec3 erot(vec3 p, vec3 ax, float ro) {
+    return mix(dot(ax,p)*ax, p, cos(ro))+sin(ro)*cross(ax,p);
+}
+
+// ---------------- Animation ----------------
+bool lightingPass;
+float animTime;
+
+void applyMomentum(inout vec4 q, float time, int i, vec4 move) {
+    float turns = move.w;
+    vec3 axis = move.xyz;
+
+    float duration = abs(turns);
+    float rotation = PI / 2. * turns * .75;
+
+    float start = float(i + 1);
+    float t = time * MOVE_COUNT;
+    float ramp = range(start, start + duration, t);
+    float angle = circularOut(ramp) * rotation;
+    vec4 q2 = rotate_angle_axis(angle, axis);
+    q = qmul(q, q2);
+}
+
+void applyMove(inout vec3 p, int i, vec4 move) {
+    float turns = move.w;
+    vec3 axis = move.xyz;
+
+    float rotation = PI / 2. * turns;
+
+    float start = float(i);
+    float t = animTime * MOVE_COUNT;
+    float ramp = range(start, start + 1., t);
+    ramp = pow(almostIdentity(ramp), 2.5);
+    float angle = ramp * rotation;
+
+    bool animSide = vmax(p * -axis) > 0.;
+    if (animSide) {
+        angle = 0.;
+    }
+
+    p = erot(p, axis, angle);
+}
+
+vec4 momentum(float time) {
+    vec4 q = QUATERNION_IDENTITY;
+    applyMomentum(q, time, 5, moves[5]);
+    applyMomentum(q, time, 4, moves[4]);
+    applyMomentum(q, time, 3, moves[3]);
+    applyMomentum(q, time, 2, moves[2]);
+    applyMomentum(q, time, 1, moves[1]);
+    applyMomentum(q, time, 0, moves[0]);
+    return q;
+}
+
+vec4 momentumLoop(float time) {
+    vec4 q;
+
+    // end state
+    q = momentum(3.);
+    q = q_conj(q);
+    q = q_slerp(QUATERNION_IDENTITY, q, time);
+
+    // next loop
+    q = qmul(momentum(time + 1.), q);
+
+    // current loop
+    q = qmul(momentum(time), q);
+
+    return q;
+}
+
+// ---------------- Modeling ----------------
+vec4 mapBox(vec3 p) {
+    // shuffle blocks
+    pR(p.xy, step(0., -p.z) * PI / -2.);
+    pR(p.xz, step(0., p.y) * PI);
+    pR(p.yz, step(0., -p.x) * PI * 1.5);
+
+    // face colors
+    vec3 face = step(vec3(vmax(abs(p))), abs(p)) * sign(p);
+    float faceIndex = max(vmax(face * vec3(0,1,2)), vmax(face * -vec3(3,4,5)));
+    vec3 col = spectrum(faceIndex / 6. + .1 + .5);
+
+    // offset sphere shell
+    float thick = .033;
+    float d = length(p + vec3(.1,.02,.05)) - .4;
+    d = max(d, -d - thick);
+
+    // grooves
+    vec3 ap = abs(p);
+    float l = sqrt(sqrt(1.) / 3.);
+    vec3 plane = cross(abs(face), normalize(vec3(1)));
+    float groove = max(-dot(ap.yzx, plane), dot(ap.zxy, plane));
+    d = smax(d, -abs(groove), .01);
+
+    float gap = .005;
+
+    // block edge
+    float r = .05;
+    float cut = -fBox(abs(p) - (1. + r + gap), vec3(1.)) + r;
+    d = smax(d, -cut, thick / 2.);
+
+    // adjacent block edge bounding
+    float opp = vmin(abs(p)) + gap;
+    opp = max(opp, length(p) - 1.);
+    if (opp < d) {
+        return vec4(opp, vec3(-1));
+    }
+
+    return vec4(d, col * .4);
+}
+
+vec4 map(vec3 p) {
+    // Mouse interaction
+    if (pc.mouse_pressed > 0u) {
+        vec2 mouse = vec2(float(pc.mouse_x), float(pc.mouse_y)) / vec2(float(pc.render_w), float(pc.render_h));
+        pR(p.yz, ((mouse.y * -1.0) * 2. + 1.) * 2.);
+        pR(p.xz, ((mouse.x * -1.0) * 2. + 1.) * 4.);
+    }
+
+    // Base rotation
+    pR(p.xz, animTime * PI * 2.);
+
+    #ifdef AUDIO_AFFECTS_ROTATION
+    // Audio adds extra rotation
     float audio = getAudioIntensity();
-
-    // Base circuit visualization
-    float base = exp(-100.0 * cir.y);
-
-    // Animated pulsing based on circuit data
-    float pulse = sin(p.z * 10.0 + pc.time * -5.0 + cir.x * 10.0) * 0.5 + 0.5;
-
-    #ifdef AUDIO_AFFECTS_CIRCUIT
-    // Audio modulates the pulse intensity
-    pulse = mix(pulse, pulse * 1.5, audio);
-    // Audio adds extra harmonics
-    pulse += sin(p.z * 20.0 + pc.time * -8.0) * audio * 0.2;
+    pR(p.yz, audio * PI * 0.5);
+    pR(p.xy, pc.pitch_bend * PI);
     #endif
 
-    float circuit_glow = pow(cir.x * 1.8 * pulse, 8.0);
+    vec4 q = momentumLoop(animTime);
+    p = rotate_vector(p, q);
 
-    return base + circuit_glow;
+    applyMove(p, 5, moves[5]);
+    applyMove(p, 4, moves[4]);
+    applyMove(p, 3, moves[3]);
+    applyMove(p, 2, moves[2]);
+    applyMove(p, 1, moves[1]);
+    applyMove(p, 0, moves[0]);
+
+    return mapBox(p);
 }
 
-// ---------------- TV Glitch Effects ----------------
-#ifdef TV_GLITCHES
-
-// Scanline effect
-float scanline(vec2 uv, float time) {
-    float line = sin(uv.y * 800.0 + time * 5.0) * 0.04;
-    line *= sin(uv.y * 300.0 - time * 2.0) * 0.02 + 0.98;
-    return line;
+// ---------------- Rendering ----------------
+mat3 calcLookAtMatrix( in vec3 ro, in vec3 ta, in float roll ) {
+    vec3 ww = normalize( ta - ro );
+    vec3 uu = normalize( cross(ww,vec3(sin(roll),cos(roll),0.0) ) );
+    vec3 vv = normalize( cross(uu,ww));
+    return mat3( uu, vv, ww );
 }
 
-// Horizontal sync issues
-vec2 horizontalSync(vec2 uv, float time, float audio) {
-    float syncAmount = 0.0;
+vec3 calcNormal(vec3 p) {
+    const float h = 0.001;
+    vec3 n = vec3(0.0);
+    for( int i=0; i<4; i++ ) {
+        vec3 e = 0.5773*(2.0*vec3((((i+3)>>1)&1),((i>>1)&1),(i&1))-1.0);
+        n += e*map(p+e*h).x;
+    }
+    return normalize(n);
+}
 
-    // Random horizontal jumps
-    float jumpTime = floor(time * 8.0);
-    float jumpRand = hash11(jumpTime);
-    if(jumpRand < 0.1 + audio * 0.2) {
-        float jumpY = hash11(jumpTime + 100.0);
-        if(abs(uv.y - jumpY) < 0.1) {
-            syncAmount = (hash11(jumpTime + 200.0) - 0.5) * 0.2;
+vec2 iSphere( in vec3 ro, in vec3 rd, float r ) {
+    vec3 oc = ro;
+    float b = dot( oc, rd );
+    float c = dot( oc, oc ) - r*r;
+    float h = b*b - c;
+    if( h<0.0 ) return vec2(-1.0);
+    h = sqrt(h);
+    return vec2(-b-h, -b+h );
+}
+
+float softshadow( in vec3 ro, in vec3 rd, in float mint, in float tmax ) {
+    float res = 1.0;
+
+    vec2 bound = iSphere(ro, rd, .55);
+    tmax = min(tmax, bound.y);
+
+    float t = mint;
+    float ph = 1e10;
+
+    for( int i=0; i<100; i++ ) {
+        vec4 hit = map( ro + rd*t );
+        float h = hit.x;
+        if (hit.y > 0.) {
+            res = min( res, 10.0*h/t );
+        }
+        t += h;
+        if( res<0.0001 || t>tmax ) break;
+    }
+
+    return clamp( res, 0.0, 1.0 );
+}
+
+vec3 render(vec2 p) {
+    vec3 col = vec3(.02,.01,.025);
+
+    // Camera setup with audio influence
+    vec3 camPos = vec3(0,0,2.);
+
+    #ifdef AUDIO_AFFECTS_ROTATION
+    float audio = getAudioIntensity();
+    camPos.z = 2.0 - audio * 0.3; // Move camera closer with audio
+    #endif
+
+    mat3 camMat = calcLookAtMatrix( camPos, vec3(0,0,-1), 0.);
+    vec3 rd = normalize( camMat * vec3(p.xy, 2.8) );
+    vec3 pos = camPos;
+
+    vec2 bound = iSphere(pos, rd, .55);
+    if (bound.x < 0.) {
+        return col;
+    }
+
+    lightingPass = false;
+    float rayLength = bound.x;
+    float dist = 0.;
+    bool background = true;
+    vec4 res;
+
+    for (int i = 0; i < 200; i++) {
+        rayLength += dist;
+        pos = camPos + rd * rayLength;
+        res = map(pos);
+        dist = res.x;
+
+        if (abs(dist) < .001) {
+            background = false;
+            break;
+        }
+
+        if (rayLength > bound.y) {
+            break;
         }
     }
 
-    // Rolling horizontal distortion
-    float roll = sin(time * 2.0 + uv.y * 5.0) * 0.01;
-    roll *= step(0.95, sin(time * 0.3)) * (1.0 + audio);
+    // Shading
+    lightingPass = true;
 
-    uv.x += syncAmount + roll;
-    return uv;
-}
+    if (!background) {
+        col = res.yzw;
+        vec3 nor = calcNormal(pos);
+        vec3 lig = normalize(vec3(-.33,.3,.25));
+        vec3 lba = normalize( vec3(.5, -1., -.5) );
+        vec3 hal = normalize( lig - rd );
+        float amb = sqrt(clamp( 0.5+0.5*nor.y, 0.0, 1.0 ));
+        float dif = clamp( dot( nor, lig ), 0.0, 1.0 );
+        float bac = clamp( dot( nor, lba ), 0.0, 1.0 )*clamp( 1.0-pos.y,0.0,1.0);
+        float fre = pow( clamp(1.0+dot(nor,rd),0.0,1.0), 2.0 );
 
-// Vertical hold problems
-vec2 verticalHold(vec2 uv, float time, float audio) {
-    float holdTime = time * 0.5;
-    float holdAmount = 0.0;
+        if( dif > .001) dif *= softshadow( pos, lig, 0.001, .9 );
 
-    // Occasional vertical roll
-    if(sin(holdTime) > 0.98 - audio * 0.1) {
-        holdAmount = sin(holdTime * 20.0) * 0.05;
-        uv.y = fract(uv.y + holdAmount);
-    }
+        float occ = 1.;
 
-    return uv;
-}
+        float spe = pow( clamp( dot( nor, hal ), 0.0, 1.0 ),16.0)*
+        dif *
+        (0.04 + 0.96*pow( clamp(1.0+dot(hal,rd),0.0,1.0), 5.0 ));
 
-// Chromatic aberration (color separation)
-vec3 chromaticAberration(vec2 uv, float amount) {
-    return vec3(
-    uv.x - amount,
-    uv.x,
-    uv.x + amount
-    );
-}
+        vec3 lin = vec3(0.0);
+        lin += 2.80*dif*vec3(1.30,1.00,0.70);
+        lin += 0.55*amb*vec3(0.40,0.60,1.15)*occ;
+        lin += 1.55*bac*vec3(0.25,0.25,0.25)*occ*vec3(2,0,1);
+        lin += 0.25*fre*vec3(1.00,1.00,1.00)*occ;
 
-// Static/snow noise
-float tvStatic(vec2 uv, float time, float intensity) {
-    vec2 noise_uv = uv * 100.0 + time * 100.0;
-    float static_noise = hash21(floor(noise_uv));
-    return static_noise * intensity;
-}
+        col = col*lin;
+        col += 5.00*spe*vec3(1.10,0.90,0.70);
 
-// Ghosting effect (image retention)
-float ghosting(float current, float previous, float amount) {
-    return mix(current, max(current, previous * 0.9), amount);
-}
-
-// VHS tracking lines
-float trackingLines(vec2 uv, float time) {
-    float lines = 0.0;
-    float lineTime = time * 0.1;
-
-    // Horizontal tracking lines
-    for(int i = 0; i < 3; i++) {
-        float linePos = hash11(floor(lineTime) + float(i)) * 2.0 - 1.0;
-        float lineWidth = 0.01 + hash11(floor(lineTime) + float(i) + 100.0) * 0.02;
-        lines += smoothstep(lineWidth, 0.0, abs(uv.y - linePos * 0.5 - 0.5)) * 0.5;
-    }
-
-    return lines;
-}
-
-// Signal interference bands
-float interference(vec2 uv, float time, float audio) {
-    float inter = 0.0;
-
-    // Moving interference bands
-    float bandY = sin(time * 0.7) * 0.5 + 0.5;
-    float bandWidth = 0.05 + audio * 0.1;
-    float bandIntensity = smoothstep(bandWidth, 0.0, abs(uv.y - bandY));
-
-    // Add noise to the band
-    if(bandIntensity > 0.0) {
-        inter = sin(uv.x * 200.0 + time * 50.0) * bandIntensity;
-        inter *= hash21(vec2(floor(uv.x * 50.0), floor(time * 10.0)));
-    }
-
-    return inter;
-}
-
-#endif // TV_GLITCHES
-
-// ---------------- Main Raymarching ----------------
-vec3 raymarchCircuit(vec2 uv) {
-    float audio = getAudioIntensity();
-
-    // Camera setup
-    vec3 ro = vec3(0.0, pc.time * 0.2, 0.1);
-    vec3 rd = normalize(vec3(uv, 0.9));
-
-    // Add audio-reactive camera movement
-    #ifdef AUDIO_AFFECTS_CIRCUIT
-    float camSpeed = mix(0.2, 0.35, audio);
-    ro.y = pc.time * camSpeed;
-
-    // Extra rotation with audio
-    float rotSpeed = mix(0.1, 0.2, audio);
-    ro.xz = rotate(ro.xz, pc.time * rotSpeed + pc.pitch_bend);
-    rd.xz = rotate(rd.xz, pc.time * 0.2 + sin(pc.time) * audio * 0.1);
-    #else
-    ro.xz = rotate(ro.xz, pc.time * 0.1);
-    rd.xz = rotate(rd.xz, pc.time * 0.2);
-    #endif
-
-    ro.xy = rotate(ro.xy, 0.2);
-    rd.xy = rotate(rd.xy, 0.2);
-
-    // Raymarch accumulation
-    float acc = 0.0;
-    vec3 r = ro + rd * 0.5;
-
-    for(int i = 0; i < RAYMARCH_STEPS; i++) {
-        float noise_offset = nse(r.x) * 0.03;
-
-        #ifdef AUDIO_AFFECTS_CIRCUIT
-        // Audio adds more noise/variation
-        noise_offset *= (1.0 + audio * 0.5);
+        #ifdef AUDIO_AFFECTS_COLOR
+        // Audio adds glow effect
+        float audio = getAudioIntensity();
+        col += audio * fre * vec3(0.5, 0.3, 0.8) * 0.5;
         #endif
-
-        acc += scene(r + noise_offset);
-        r += rd * 0.015;
     }
-
-    // Color grading
-    vec3 col = pow(vec3(acc * 0.04), vec3(0.2, 0.6, 2.0) * 8.0) * 2.0;
-
-    #ifdef AUDIO_AFFECTS_CIRCUIT
-    // Audio affects color temperature
-    vec3 audioColor = vec3(1.0, 0.7, 0.5);
-    col = mix(col, col * audioColor, audio * 0.3);
-    #endif
-
-    // Clamp and apply flickering
-    col = clamp(col, vec3(0.0), vec3(1.0));
-    col *= fbm(pc.time * 6.0) * 2.0;
 
     return col;
+}
+
+float vmul(vec2 v) {
+    return v.x * v.y;
 }
 
 // ---------------- Main ----------------
@@ -280,92 +452,41 @@ void main() {
     vec2 iResolution = vec2(float(pc.render_w), float(pc.render_h));
     vec2 fragCoord = frag_uv * iResolution;
 
-    // Get base UV coordinates
-    vec2 uv = fragCoord.xy / iResolution.xy;
-    vec2 suv = uv; // Save original UV for effects
+    // Initialize animation moves
+    initMoves();
 
-    // Convert to -1 to 1 range with aspect correction
-    uv = 2.0 * uv - 1.0;
-    uv.x *= iResolution.x / iResolution.y;
+    // Calculate animation time
+    float mTime = (pc.time + TIME_OFFSET) / LOOP_DURATION;
+    animTime = mTime;
 
-    float audio = getAudioIntensity();
+    vec2 o = vec2(0);
+    vec3 col = vec3(0);
 
-    #ifdef TV_GLITCHES
-    // Apply TV distortion effects to UV
-    vec2 distorted_uv = uv;
+    // Anti-aliasing and motion blur
+    #ifdef AA
+    for( int m=0; m<AA; m++ )
+    for( int n=0; n<AA; n++ ) {
+        o = vec2(float(m),float(n)) / float(AA) - 0.5;
+        float d = 0.5*vmul(sin(mod(fragCoord.xy * vec2(147,131), vec2(PI * 2.))));
+        animTime = mTime - 0.1*(1.0/24.0)*(float(m*AA+n)+d)/float(AA*AA-1);
+        #endif
 
-    // Sync issues get worse with audio
-    distorted_uv = horizontalSync(distorted_uv, pc.time, audio);
-    distorted_uv = verticalHold(distorted_uv, pc.time, audio);
+        animTime = mod(animTime, 1.);
+        vec2 p = (-iResolution.xy + 2. * (fragCoord + o)) / iResolution.y;
+        col += render(p);
 
-    // Use distorted UV for main rendering
-    vec3 col = raymarchCircuit(distorted_uv);
-
-    // Apply scanlines
-    float scan = scanline(suv, pc.time);
-    col *= 0.9 + scan;
-
-    // Apply chromatic aberration (increases with audio)
-    if(audio > 0.3) {
-        vec3 chroma_uvs = chromaticAberration(distorted_uv, audio * 0.003);
-        vec3 col_r = raymarchCircuit(vec2(chroma_uvs.r, distorted_uv.y));
-        vec3 col_b = raymarchCircuit(vec2(chroma_uvs.z, distorted_uv.y));
-        col.r = col_r.r;
-        col.b = col_b.b;
+        #ifdef AA
     }
-
-    //// Add TV static
-    //float staticIntensity = 0.02 + audio * 0.03;
-    //// Occasional static bursts
-    //if(hash11(floor(pc.time * 2.0)) < 0.05 + audio * 0.1) {
-    //    staticIntensity = 0.2 + audio * 0.3;
-    //}
-    //col += tvStatic(suv, pc.time, staticIntensity);
-
-    // Add tracking lines
-    col *= 1.0 - trackingLines(suv, pc.time) * 0.3;
-
-    // Add interference
-    float inter = interference(suv, pc.time, audio);
-    col = mix(col, vec3(0.1, 0.15, 0.1), inter * 0.5);
-
-    // Occasional complete signal loss
-    float signalLoss = step(0.98 - audio * 0.05, hash11(floor(pc.time * 3.0)));
-    if(signalLoss > 0.5) {
-        col = vec3(tvStatic(suv, pc.time * 10.0, 1.0)) * 0.1;
-    }
-
-    // Vignette effect (CRT screen edges)
-    float vignette = 1.0 - length(suv - 0.5) * 0.7;
-    vignette = pow(saturate(vignette), 1.5);
-    col *= vignette;
-
-    // Phosphor glow simulation
-    col = mix(col, smoothstep(0.0, 1.0, col), 0.5);
-
-    #else
-    // No TV glitches - clean rendering
-    vec3 col = raymarchCircuit(uv);
+    col /= float(AA*AA);
     #endif
 
     // Gamma correction
-    col = pow(col, vec3(1.0 / 2.2));
+    col = pow( col, vec3(0.4545) );
 
     // CC controls for brightness and gamma (from your setup)
     float bright = mix(0.85, 1.55, saturate(pc.cc74));
     float gammaC = 1.0 + 0.7 * saturate(pc.cc1);
     col = pow(max(col * bright, 0.0), vec3(gammaC));
 
-    // MIDI note color tinting
-    if(pc.note_count > 0u) {
-        float noteTint = float(pc.last_note) / 127.0;
-        vec3 tintColor = vec3(
-        sin(noteTint * PI) * 0.2,
-        sin(noteTint * PI + PI/3.0) * 0.2,
-        sin(noteTint * PI + 2.0*PI/3.0) * 0.2
-        );
-        col += tintColor * pc.note_velocity;
-    }
-
-    out_color = vec4(clamp(col, 0.0, 3.0), 1.0);
+    out_color = vec4(saturate(col), 1.0);
 }
