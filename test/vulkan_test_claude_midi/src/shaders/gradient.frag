@@ -139,7 +139,7 @@ void main() {
 
     // ---------- GLITCH DOMAIN WARP (screen-space) ----------
     // line tear amount (bigger with energy/highs)
-    float lineGlitchAmt = mix(0.0, 0.008, 0.4*A + 0.6*H);
+    float lineGlitchAmt = mix(0.2, 0.008, 0.4*A + 0.6*H);
     // blocky jump probability (also reacts to mids)
     float blockJitter = step(0.97 - 0.5*M, hash21(vec2(floor(pc.time*7.0), 19.3)));
 
@@ -243,7 +243,7 @@ void main() {
     g *= vign;
 
     // occasional hard tear (brief horizontal clamp band)
-    float tearGate = step(0.985, hash11(floor(pc.time*5.0)+3.7));
+    float tearGate = 0.5 * step(0.985, hash11(floor(pc.time*5.0)+3.7));
     if(tearGate > 0.5){
         float bandY = fract(pc.time*0.7) * 0.8 + 0.1;
         float band = smoothstep(bandY-0.01, bandY, uv.y) * (1.0 - smoothstep(bandY, bandY+0.01, uv.y));
