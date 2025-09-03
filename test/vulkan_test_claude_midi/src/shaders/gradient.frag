@@ -129,7 +129,7 @@ void main() {
     vec3 c;
 
     // March params (kept as in the Shadertoy)
-    const float ITER = 82.0;
+    const float ITER = 32.0;
     const float FUDGE_FACTOR = 0.8;
     const float INTERSECTION_PRECISION = 0.001;
     const float MAX_DIST = 20.0;
