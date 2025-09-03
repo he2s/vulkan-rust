@@ -12,6 +12,8 @@ layout(push_constant) uniform PushConstants {
     float cc74;   // high band / cutoff
     uint  note_count;
     uint  last_note;
+    uint  render_w;
+    uint  render_h;
 } pc;
 
 layout(location = 0) in vec2 fragUV;
@@ -71,6 +73,17 @@ float fixDistance(float d, float k) {
 
 // We’ll set this each frame from pc.time
 float uTime;
+
+// Rotation around Y-axis
+mat3 rotateY(float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(
+    c, 0.0, s,
+    0.0, 1.0, 0.0,
+    -s, 0.0, c
+    );
+}
 
 // Distance field
 float map(vec3 p) {
@@ -134,6 +147,8 @@ void main() {
     const float INTERSECTION_PRECISION = 0.001;
     const float MAX_DIST = 20.0;
 
+
+    vec3 rotatedVector = rotateY(pc.pitch_bend * 1.0) * vec3(0.6, 0.25, 0.7);
     for (float i = 0.0; i < ITER; i++) {
         // step a little slower so we can accumulate glow
         rayLength += max(INTERSECTION_PRECISION, abs(dist) * FUDGE_FACTOR);
@@ -146,7 +161,7 @@ void main() {
         c *= mix(vec3(1.4, 2.1, 1.7), vec3(1.2, 2.2, 1.8), clamp(pc.cc74, 0.0, 1.0));
 
         // base purple-ish glow each step
-        c += vec3(0.6, 0.25, 0.7) * FUDGE_FACTOR / 160.0;
+        c += rotatedVector * FUDGE_FACTOR / 160.0;
         c *= smoothstep(20.0, 7.0, length(rayPosition)); // distance fade from origin
 
         // fade further from camera
