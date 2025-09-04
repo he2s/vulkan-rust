@@ -1,437 +1,514 @@
 #version 450
 
-// ─────────────────────────────────────────────────────
-// Push constants / IO (your setup)
-// ─────────────────────────────────────────────────────
+// ===================================================================================
+// Push constants & varyings (fits your scaffold)
+// ===================================================================================
 layout(push_constant) uniform PushConstants {
-    float time; uint mouse_x; uint mouse_y; uint mouse_pressed;
-    float note_velocity; float pitch_bend; float cc1; float cc74;
-    uint  note_count; uint last_note; float osc_ch1; float osc_ch2;
-    uint  render_w; uint render_h;
+    float time;
+    uint  mouse_x;
+    uint  mouse_y;
+    uint  mouse_pressed;
+    float note_velocity;
+    float pitch_bend;
+    float cc1;    // mids / mod wheel
+    float cc74;   // highs / cutoff
+    uint  note_count;
+    uint  last_note;
+    uint  render_w;
+    uint  render_h;
 } pc;
 
-layout(location=0) in vec2 frag_uv;          // 0..1
-layout(location=1) in vec2 frag_screen_pos;  // optional
-layout(location=0) out vec4 out_color;
+layout(location = 0) in vec2  fragUV;        // 0..1
+layout(location = 1) in float vertexEnergy;
+layout(location = 2) in vec3  worldPos;
 
-// ─────────────────────────────────────────────────────
-// Shadertoy compatibility shims + tunables
-// ─────────────────────────────────────────────────────
-#define PI 3.14159265358979323846
-#define TAU 6.28318530717958647693
+layout(location = 0) out vec4 outColor;
 
-// iTime / iResolution / iMouse like on Shadertoy
-#define iTime        (pc.time)
-#define iResolution  vec3(float(pc.render_w), float(pc.render_h), 1.0)
-vec4 iMouse = vec4(float(pc.mouse_x),
-float(pc.render_h) - float(pc.mouse_y),
-float(pc.mouse_pressed), 0.0);
+// ===================================================================================
+// Globals (mirrors style of your source)
+// ===================================================================================
+#define kScreenDownsample 1
 
-// The original shader referenced these from a common tab.
-// You can swap them with your own values at the top here:
-const float TIME_OFFSET   = 0.0;
-const float LOOP_DURATION = 6.0; // seconds per move loop
+vec2  gResolution;
+vec2  gFragCoord;
+float gTime;
+float gDxyDuv;
 
-// Reduced AA for better performance - use 1 for high performance, 2 for balanced
-#ifndef AA
-#define AA 1
-#endif
-
-// Dummy iFrame used by their normal estimator macro trick
-const int iFrame = 0;
-
-// Audio proxy (used if you want a touch of reactivity)
-float audioLevel() {
-    return clamp((pc.note_velocity + pc.osc_ch1 + pc.osc_ch2) * 0.5, 0.0, 1.0);
+void SetGlobals(vec2 fragCoord, vec2 resolution, float time){
+    gFragCoord  = fragCoord;
+    gResolution = resolution;
+    gTime       = time;
+    gDxyDuv     = 1.0 / gResolution.x; // for SDF widths, assumes square pixels
 }
 
-// ─────────────────────────────────────────────────────
-// Optimized quaternion utilities with reduced precision
-// ─────────────────────────────────────────────────────
-vec4 qmul(vec4 a, vec4 b) {
-    return vec4(
-    a.w*b.xyz + b.w*a.xyz + cross(a.xyz, b.xyz),
-    a.w*b.w - dot(a.xyz, b.xyz)
+// ===================================================================================
+// Math & utilities
+// ===================================================================================
+#define kPi     3.14159265359
+#define kTwoPi  (2.0 * kPi)
+#define kRoot2  1.41421356237
+
+float sqr(float a){ return a*a; }
+float saturate(float a){ return clamp(a,0.0,1.0); }
+float sin01(float a){ return 0.5*sin(a)+0.5; }
+float SmoothStep01(float x){ return x*x*(3.0-2.0*x); }
+float PaddedSmoothStep(float x, float a, float b){ return SmoothStep01(saturate(x*(a+b+1.0)-a)); }
+float toRad(float deg){ return kTwoPi*deg/360.0; }
+
+// ===================================================================================
+/* Hashing / RNG (FNV + combiners) */
+// ===================================================================================
+uint HashCombine(uint a, uint b){
+    return (((a << (31u - (b & 31u))) | (a >> (b & 31u)))) ^
+    ((b << (a & 31u)) | (b >> (31u - (a & 31u))));
+}
+
+uint HashOf(uint i){
+    const uint kFNVPrime=0x01000193u, kFNVOffset=0x811c9dc5u;
+    uint h=(kFNVOffset ^ (i & 0xffu)) * kFNVPrime;
+    h=(h ^ ((i>>8u)&0xffu))*kFNVPrime;
+    h=(h ^ ((i>>16u)&0xffu))*kFNVPrime;
+    h=(h ^ ((i>>24u)&0xffu))*kFNVPrime;
+    return h;
+}
+uint HashOf(uint a, uint b){ return HashCombine(HashOf(a), HashOf(b)); }
+uint HashOf(uint a, uint b, uint c){ return HashCombine(HashCombine(HashOf(a), HashOf(b)), HashOf(c)); }
+uint HashOf(uint a, uint b, uint c, uint d){
+    return HashCombine(HashCombine(HashOf(a), HashOf(b)), HashCombine(HashOf(c), HashOf(d)));
+}
+uint HashOf(uvec2 v){ return HashCombine(HashOf(v.x), HashOf(v.y)); }
+
+float HashToFloat(uint i){ return float(i) / float(0xffffffffu); }
+
+// Simple value noise
+float vhash(vec2 p){
+    uvec2 up = uvec2(floatBitsToUint(p.x*1639.0), floatBitsToUint(p.y*1531.0));
+    return HashToFloat(HashOf(up));
+}
+float n2(vec2 p){
+    vec2 i=floor(p), f=fract(p);
+    float a=vhash(i);
+    float b=vhash(i+vec2(1,0));
+    float c=vhash(i+vec2(0,1));
+    float d=vhash(i+vec2(1,1));
+    vec2 u=f*f*(3.0-2.0*f);
+    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+
+// ===================================================================================
+// Color helpers (HSV) — used for color bursts
+// ===================================================================================
+vec3 Hue(float phi){
+    float t = 6.0*phi; int i=int(t);
+    vec3 c0 = vec3(((i+4)/3)&1, ((i+2)/3)&1, ((i+0)/3)&1);
+    vec3 c1 = vec3(((i+5)/3)&1, ((i+3)/3)&1, ((i+1)/3)&1);
+    return mix(c0, c1, t - float(i));
+}
+vec3 HSVToRGB(vec3 hsv){ return mix(vec3(0.0), mix(vec3(1.0), Hue(hsv.x), hsv.y), hsv.z); }
+vec3 RGBToHSV(vec3 rgb){
+    float v = max(max(rgb.r,rgb.g),rgb.b);
+    float m = min(min(rgb.r,rgb.g),rgb.b);
+    float c = v - m;
+    float h = (c < 1e-10) ? 0.0 :
+    (v==rgb.r ? (rgb.g-rgb.b)/c/6.0 :
+    v==rgb.g ? (2.0 + (rgb.b-rgb.r)/c)/6.0 :
+    (4.0 + (rgb.r-rgb.g)/c)/6.0);
+    if(h<0.0) h+=1.0;
+    float s = (v<1e-10)?0.0:c/max(1e-10,v);
+    return vec3(h,s,v);
+}
+
+// Psychedelic color palette for bursts
+vec3 BurstColor(float t, float energy){
+    vec3 col1 = vec3(1.0, 0.1, 0.8);  // hot pink
+    vec3 col2 = vec3(0.1, 1.0, 0.3);  // electric green
+    vec3 col3 = vec3(0.9, 0.9, 0.1);  // electric yellow
+    vec3 col4 = vec3(0.2, 0.3, 1.0);  // electric blue
+    vec3 col5 = vec3(1.0, 0.4, 0.1);  // electric orange
+
+    float phase = fract(t);
+    float band = floor(t * 5.0);
+
+    vec3 base;
+    if(band < 1.0) base = mix(col1, col2, phase);
+    else if(band < 2.0) base = mix(col2, col3, phase);
+    else if(band < 3.0) base = mix(col3, col4, phase);
+    else if(band < 4.0) base = mix(col4, col5, phase);
+    else base = mix(col5, col1, phase);
+
+    return base * (1.0 + 2.0*energy);
+}
+
+// ===================================================================================
+// Ordered dithering (4x4 Bayer)
+// ===================================================================================
+const mat4 kOrderedDither = mat4(
+vec4( 0.0,  8.0,  2.0, 10.0),
+vec4(12.0,  4.0, 14.0,  6.0),
+vec4( 3.0, 11.0,  1.0,  9.0),
+vec4(15.0,  7.0, 13.0,  5.0)
+);
+float OrderedDither(ivec2 p){ return (kOrderedDither[p.x & 3][p.y & 3] + 1.0) / 17.0; }
+
+// ===================================================================================
+// Screen->world transforms (2D homography-ish)
+// ===================================================================================
+// Column-major; multiply as (M * vec3(p,1))
+mat3 WorldToViewMatrix(float rot, vec2 trans, float sca){
+    float c=cos(rot), s=sin(rot);
+    // columns
+    return mat3(
+    c/sca,  s/sca, 0.0,
+    -s/sca,  c/sca, 0.0,
+    trans.x, trans.y, 1.0
     );
 }
-vec4 q_conj(vec4 q){ return vec4(-q.xyz, q.w); }
+vec2 TransformScreenToWorld(vec2 p){
+    return (p - 0.5*gResolution) / gResolution.y;
+}
 
-vec4 rotate_angle_axis(float angle, vec3 axis) {
-    float h = 0.5*angle;
-    float s = sin(h);
-    return vec4(axis*s, cos(h)); // Removed normalize for performance
+// ===================================================================================
+// Hex tiling helpers (barycentric mapping, like your source)
+// ===================================================================================
+vec3 Cartesian2DToBarycentric(vec2 p){
+    return vec3(p,0.0) * mat3(
+    vec3(0.0, 1.0/0.8660254037844387, 0.0),
+    vec3(1.0, 0.5773502691896257,     0.0),
+    vec3(-1.0,0.5773502691896257,     0.0)
+    );
 }
-vec3 rotate_vector(vec3 v, vec4 q) {
-    vec4 t = qmul(qmul(q, vec4(v, 0.0)), q_conj(q));
-    return t.xyz;
-}
-vec4 q_norm(vec4 q){
-    float l = inversesqrt(max(dot(q,q), 1e-8));
-    return q * l;
-}
-// Simplified slerp with early exit for similar quaternions
-vec4 q_slerp(vec4 a, vec4 b, float t) {
-    a = q_norm(a); b = q_norm(b);
-    float cosom = dot(a, b);
-    if (cosom < 0.0) { b = -b; cosom = -cosom; }
+vec2 Cartesian2DToHexagonalTiling(in vec2 uv, out vec3 bary, out ivec2 ij){
+    const vec2 kHexRatio = vec2(1.5, 0.8660254037844387);
+    vec2 uvClip = mod(uv + kHexRatio, 2.0*kHexRatio) - kHexRatio;
 
-    // Use linear interpolation for similar quaternions (performance boost)
-    if (cosom > 0.95) {
-        return q_norm(mix(a, b, t));
+    ij = ivec2((uv + kHexRatio) / (2.0*kHexRatio)) * 2;
+    if(uv.x + kHexRatio.x <= 0.0) ij.x -= 2;
+    if(uv.y + kHexRatio.y <= 0.0) ij.y -= 2;
+
+    bary = Cartesian2DToBarycentric(uvClip);
+    if(bary.x > 0.0){
+        if(bary.z > 1.0){ bary += vec3(-1.0, 1.0, -2.0); ij += ivec2(-1, 1); }
+        else if(bary.y > 1.0){ bary += vec3(-1.0, -2.0, 1.0); ij += ivec2(1, 1); }
+    } else {
+        if(bary.y < -1.0){ bary += vec3(1.0, 2.0, -1.0); ij += ivec2(-1, -1); }
+        else if(bary.z < -1.0){ bary += vec3(1.0, -1.0, 2.0); ij += ivec2(1, -1); }
     }
-
-    float omega = acos(cosom);
-    float sinom = sin(omega);
-    float k0 = sin((1.0 - t) * omega) / sinom;
-    float k1 = sin(t * omega) / sinom;
-    return q_norm(a*k0 + b*k1);
+    return vec2(bary.y*0.5773502691896257 - bary.z*0.5773502691896257, bary.x);
 }
 
-// ─────────────────────────────────────────────────────
-// Move program - precomputed for better performance
-// ─────────────────────────────────────────────────────
-const int MOVE_COUNT = 6;
-const vec4 moves[MOVE_COUNT] = vec4[](
-vec4( 1.0, 0.0, 0.0,  1.0),
-vec4( 0.0, 1.0, 0.0, -1.0),
-vec4( 0.0, 0.0, 1.0,  1.0),
-vec4(-1.0, 0.0, 0.0,  1.0),
-vec4( 0.0, 1.0, 0.0,  1.0),
-vec4( 0.0, 0.0,-1.0,  1.0)
-);
-
-// Precomputed normalized axes for moves
-const vec3 move_axes[MOVE_COUNT] = vec3[](
-vec3( 1.0, 0.0, 0.0),
-vec3( 0.0, 1.0, 0.0),
-vec3( 0.0, 0.0, 1.0),
-vec3(-1.0, 0.0, 0.0),
-vec3( 0.0, 1.0, 0.0),
-vec3( 0.0, 0.0,-1.0)
-);
-
-// ─────────────────────────────────────────────────────
-// Optimized utilities with reduced precision
-// ─────────────────────────────────────────────────────
-
-// Helpers - use mediump where possible for RTX 2070
-void pR(inout vec2 p, float a) {
-    vec2 cs = vec2(cos(a), sin(a));
-    p = vec2(dot(p, vec2(cs.x, -cs.y)), dot(p, cs.yx));
-}
-float vmin(vec3 v) { return min(min(v.x, v.y), v.z); }
-float vmax(vec3 v) { return max(max(v.x, v.y), v.z); }
-float fBox(vec3 p, vec3 b) {
-    vec3 d = abs(p) - b;
-    return length(max(d, vec3(0))) + vmax(min(d, vec3(0)));
-}
-// Faster smooth min/max
-float smin(float a, float b, float k){
-    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-    return mix(b, a, h) - k * h * (1.0 - h);
-}
-float smax(float a, float b, float k) { return -smin(-a, -b, k); }
-float range(float vmin_, float vmax_, float value) {
-    return clamp((value - vmin_) / (vmax_ - vmin_), 0., 1.);
-}
-// Optimized functions
-float almostIdentity(float x) { return x*x*(2.0-x); }
-float circularOut(float t) { return sqrt(max((2.0 - t) * t, 0.0)); }
-// Cached palette calculation
-vec3 spectrum(float n) {
-    float t = n + 0.1 + 0.5;
-    return vec3(0.5) + vec3(0.5) * cos(TAU * (t + vec3(0.0, 0.33, 0.67)));
-}
-vec3 erot(vec3 p, vec3 ax, float ro) {
-    float cr = cos(ro), sr = sin(ro);
-    return mix(dot(ax,p)*ax, p, cr) + sr*cross(ax,p);
+// ===================================================================================
+// Dark vignette (stronger than original)
+// ===================================================================================
+float DarkVignette(vec2 fragCoord){
+    vec2 uv = fragCoord / gResolution;
+    uv.x = (uv.x - 0.5) * (gResolution.x / gResolution.y) + 0.5;
+    vec2 p = 2.0*(uv - 0.5);
+    float dist = length(p) / kRoot2;
+    // Much stronger darkening
+    const float kStrength=0.85, kScale=0.4, kExp=2.5;
+    return mix(1.0, max(0.0, 1.0 - pow(dist*kScale, kExp)), kStrength);
 }
 
-// Animation globals
-bool lightingPass;
-float time; // local (loop-normalized) time [0..1] with motion blur variation
+// ===================================================================================
+// Interference / displacement (enhanced for darker feel)
+// ===================================================================================
+bool Interfere(inout vec2 xy, inout vec3 tint, in vec2 res, float mids, float highs){
+    // More aggressive interference for darker mood
+    float kStaticFrequency       = mix(0.12, 0.25, highs);
+    float kStaticLowMagnitude    = 0.015;
+    float kStaticHighMagnitude   = 0.04 + 0.08*highs;
 
-void applyMomentum(inout vec4 q, float tNow, int i, vec4 move) {
-    float turns = move.w;
-    vec3 axis = move_axes[i]; // Use precomputed axis
-    float duration = abs(turns);
-    float rotation = PI*0.375 * turns; // Precompute PI/2 * 0.75
-    float start = float(i + 1);
-    float t = tNow * float(MOVE_COUNT);
-    float ramp = range(start, start + duration, t);
-    float angle = circularOut(ramp) * rotation;
-    vec4 q2 = rotate_angle_axis(angle, axis);
-    q = qmul(q, q2);
-}
-void applyMove(inout vec3 p, int i, vec4 move) {
-    float turns = move.w;
-    vec3 axis = move_axes[i]; // Use precomputed axis
-    float rotation = PI*0.5 * turns;
-    float start = float(i);
-    float t = time * float(MOVE_COUNT);
-    float ramp = range(start, start + 1., t);
-    ramp = pow(almostIdentity(ramp), 2.5);
-    float angle = ramp * rotation;
-    bool animSide = vmax(p * -axis) > 0.;
-    if (animSide) angle = 0.;
-    p = erot(p, axis, angle);
-}
+    float kVDisplaceFrequency    = mix(0.08, 0.18, mids);
+    float kHDisplaceFrequency    = mix(0.25, 0.40, highs);
+    float kHDisplaceVMagnitude   = 0.12 + 0.12*mids;
+    float kHDisplaceHMagnitude   = 0.45 + 0.35*highs;
 
-// Cache momentum calculations
-vec4 momentum(float tNow) {
-    vec4 q = vec4(0,0,0,1);
-    for (int i = MOVE_COUNT-1; i >= 0; --i) applyMomentum(q, tNow, i, moves[i]);
-    return q;
-}
-vec4 momentumLoop(float tNow) {
-    vec4 q = momentum(3.0);
-    q = q_conj(q);
-    q = q_slerp(vec4(0,0,0,1), q, tNow);
-    q = qmul(momentum(tNow + 1.), q);
-    q = qmul(momentum(tNow), q);
-    return q_norm(q);
-}
+    // Frame bucket from time
+    float frameBucketF = floor(gTime * 60.0 / 8.0);  // Faster interference
+    uint  frameBucket  = uint(max(0.0, frameBucketF));
+    float frameHash    = HashToFloat(HashOf(frameBucket));
 
-// Optimized modelling with early exits
-vec4 mapBox(vec3 p) {
-    // shuffle blocks - optimized rotations
-    pR(p.xy, step(0., -p.z) * -PI*0.5);
-    pR(p.xz, step(0.,  p.y) * PI);
-    pR(p.yz, step(0., -p.x) * PI*1.5);
+    bool  isDisplaced  = false;
+    tint = vec3(0.4); // Darker base tint
 
-    // face colors - optimized calculation
-    vec3 face = step(vec3(vmax(abs(p))), abs(p)) * sign(p);
-    float faceIndex = max(dot(face, vec3(0,1,2)), dot(face, -vec3(3,4,5)));
-    vec3 col = spectrum(faceIndex * 0.16666667); // 1/6 precomputed
-
-    // offset sphere shell
-    const float thick = 0.033;
-    float d = length(p + vec3(.1,.02,.05)) - 0.4;
-    d = max(d, -d - thick);
-
-    // grooves - simplified calculation
-    vec3 ap = abs(p);
-    vec3 plane = cross(abs(face), vec3(0.57735027)); // normalize(vec3(1)) precomputed
-    float groove = max(-dot(ap.yzx, plane), dot(ap.zxy, plane));
-    d = smax(d, -abs(groove), 0.01);
-
-    const float gap = 0.005;
-    const float r = 0.05;
-
-    // block edge
-    float cut = -fBox(abs(p) - (1.05 + gap), vec3(1.)) + r; // 1+r precomputed
-    d = smax(d, -cut, thick * 0.5);
-
-    // adjacent block edge bounding
-    float opp = vmin(abs(p)) + gap;
-    opp = max(opp, length(p) - 1.);
-    if (opp < d) {
-        return vec4(opp, vec3(-1));
-    }
-
-    return vec4(d, col * 0.4);
-}
-
-vec4 map(vec3 p) {
-    // Mouse interaction - only if mouse is active
-    if (iMouse.z > 0.5) {
-        pR(p.yz, (iMouse.y / iResolution.y * -2. + 1.) * 2.);
-        pR(p.xz, (iMouse.x / iResolution.x * -2. + 1.) * 4.);
-    }
-
-    // Base spin with pitch bend
-    pR(p.xz, iTime * TAU + pc.pitch_bend * 0.25);
-
-    vec4 q = momentumLoop(time);
-    p = rotate_vector(p, q);
-
-    // Unrolled loop for better performance
-    applyMove(p, 5, moves[5]);
-    applyMove(p, 4, moves[4]);
-    applyMove(p, 3, moves[3]);
-    applyMove(p, 2, moves[2]);
-    applyMove(p, 1, moves[1]);
-    applyMove(p, 0, moves[0]);
-
-    return mapBox(p);
-}
-
-// Camera & shading helpers
-mat3 calcLookAtMatrix( in vec3 ro, in vec3 ta, in float roll )
-{
-    vec3 ww = normalize( ta - ro );
-    vec3 uu = normalize( cross(ww,vec3(sin(roll),cos(roll),0.0) ) );
-    vec3 vv = normalize( cross(uu,ww));
-    return mat3( uu, vv, ww );
-}
-
-// Optimized normal calculation with fewer samples
-vec3 calcNormal(vec3 p)
-{
-    const vec2 h = vec2(0.001, 0.0);
-    return normalize( vec3(map(p+h.xyy).x - map(p-h.xyy).x,
-    map(p+h.yxy).x - map(p-h.yxy).x,
-    map(p+h.yyx).x - map(p-h.yyx).x ) );
-}
-
-// origin sphere intersection
-vec2 iSphere( in vec3 ro, in vec3 rd, float r )
-{
-    vec3 oc = ro;
-    float b = dot( oc, rd );
-    float c = dot( oc, oc ) - r*r;
-    float h = b*b - c;
-    if( h<0.0 ) return vec2(-1.0);
-    h = sqrt(h);
-    return vec2(-b-h, -b+h );
-}
-
-// Simplified shadow calculation - fewer samples
-float softshadow( in vec3 ro, in vec3 rd, in float mint, in float tmax )
-{
-    float res = 1.0;
-    vec2 bound = iSphere(ro, rd, 0.55);
-    tmax = min(tmax, bound.y);
-
-    float t = mint;
-    for( int i=0; i<50; i++ ) // Reduced from 100 to 50
+    // Static row jitter (more aggressive)
     {
-        vec4 hit = map( ro + rd*t );
-        float h = hit.x;
-        if (hit.y > 0.) {
-            res = min( res, 10.0*h/t );
+        float interP     = 0.02;
+        float displacement = res.x * kStaticLowMagnitude;
+        if(frameHash < kStaticFrequency){
+            interP      = 0.6;
+            displacement = kStaticHighMagnitude * res.x;
+            tint        = vec3(0.2); // Even darker during static
         }
-        t += h;
-        if( res<0.0001 || t>tmax ) break;
+        float rowSeed = n2(vec2(0.0, xy.y*0.3 + gTime*3.0));
+        if(rowSeed < interP){
+            float mag = n2(vec2(gTime*4.5, xy.y*0.25))*2.0 - 1.0;
+            xy.x -= displacement * sign(mag) * sqr(abs(mag));
+            isDisplaced = true;
+        }
     }
-    return clamp( res, 0.0, 1.0 );
+
+    // Vertical displacement gate
+    if(frameHash > 1.0 - kVDisplaceFrequency){
+        float dispX = HashToFloat(HashOf(8783u, frameBucket));
+        float dispY = HashToFloat(HashOf(364719u, frameBucket));
+        if(xy.y < dispX * res.y){
+            xy.y -= mix(-1.0, 1.0, dispY) * res.y * 0.25;
+            isDisplaced = true;
+            tint = vec3(0.1); // Very dark
+        }
+    }
+    // Horizontal displacement band gate
+    else if(frameHash > 1.0 - kHDisplaceFrequency - kVDisplaceFrequency){
+        float dispX = HashToFloat(HashOf(147251u, frameBucket));
+        float dispY = HashToFloat(HashOf(287512u, frameBucket));
+        float dispZ = HashToFloat(HashOf(8756123u, frameBucket));
+        if(xy.y > dispX * res.y && xy.y < (dispX + mix(0.0, kHDisplaceVMagnitude, dispZ)) * res.y){
+            xy.x -= mix(-1.0, 1.0, dispY) * res.x * kHDisplaceHMagnitude;
+            isDisplaced = true;
+            tint = vec3(0.15);
+        }
+    }
+
+    return isDisplaced;
 }
 
-vec3 render(vec2 p) {
-    vec3 col = vec3(0.02, 0.01, 0.025);
+// ===================================================================================
+// Core "Render" — darker with color bursts
+// ===================================================================================
+vec3 Render(vec2 xy, int idx, int maxSamples, bool isDisplaced, float jpegDamage,
+float mids, float highs, float velocity, out float blendOut)
+{
+    // Temporal sampling
+    float xi = (float(idx) + 0.6180339) / float(maxSamples);
+    float baseSpeed = mix(0.08, 0.18, 0.5*mids + 0.5*highs); // Slower, more deliberate
+    float time = gTime * baseSpeed + xi * (isDisplaced ? 2.0 : 0.4);
 
-    vec3 camPos = vec3(0,0,2.);
-    mat3 camMat = calcLookAtMatrix( camPos, vec3(0,0,-1), 0.);
-    vec3 rd = normalize( camMat * vec3(p.xy, 2.8) );
-    vec3 pos = camPos;
+    float phase = fract(time);
+    int interval = (int(floor(time)) & 1) << 1;
+    float morph, warpedTime;
 
-    vec2 bound = iSphere(pos, rd, 0.55);
-    if (bound.x < 0.) return col;
+    const float kIntervalPartition = 0.85;
+    if(phase < kIntervalPartition){
+        float y = (interval==0) ? xy.y : (gResolution.y - xy.y);
+        warpedTime = (phase / kIntervalPartition) - 0.3 * sqrt(y / gResolution.y) - 0.15;
+        phase = fract(warpedTime);
+        morph = 1.0 - PaddedSmoothStep(sin01(kTwoPi * phase), 0.0, 0.3);
+        blendOut = float(interval/2) * 0.3; // Darker blend
+        if(interval == 2) warpedTime *= 0.6;
+    } else {
+        time -= 0.9 * baseSpeed * xi * (isDisplaced?1.2:0.5);
+        warpedTime = time;
+        phase = (fract(time) - kIntervalPartition) / (1.0 - kIntervalPartition);
+        // KickDrop-ish curve
+        float kd = exp(-sqr((phase - 0.15)/0.25)) * -0.15 + smoothstep(0.25, 0.8, phase);
+        blendOut = (kd + float(interval/2)) * 0.4;
+        morph = 1.0;
+        interval++;
+    }
+    float beta = abs(2.0*max(0.0, blendOut) - 1.0);
 
-    lightingPass = false;
-    float rayLength = bound.x;
-    float dist = 0.;
-    bool background = true;
-    vec4 res;
+    // Screen->world with chroma warp
+    vec2 uvView = TransformScreenToWorld(xy);
+    float xi2 = n2(uvView*vec2(113.0,97.0) + gTime);
+    uvView /= 1.0 + 0.08 * length(uvView) * xi2;
 
-    // Reduced marching steps from 200 to 120
-    for (int i = 0; i < 120; i++) {
-        rayLength += dist;
-        pos = camPos + rd * rayLength;
-        res = map(pos);
-        dist = res.x;
+    // Rotation + zoom
+    float expMorph = pow(morph, 0.4);
+    const float kZoom = 0.4;
+    float kScale = mix(2.8, 1.0, expMorph);
+    mat3 M = WorldToViewMatrix(blendOut * kTwoPi, vec2(0.0), kZoom);
+    uvView = (M * vec3(uvView,1.0)).xy;
 
-        if (abs(dist) < 0.001) { background = false; break; }
-        if (rayLength > bound.y) break;
+    // Y squish warp and rotation
+    vec2 uvWarp = uvView;
+    uvWarp.y *= mix(1.0, 0.08, sqr(1.0 - morph) * xi * saturate(sqr(0.4*(1.0 + uvView.y))));
+    float thetaR = toRad(45.0) * beta;
+    mat2 R = mat2(cos(thetaR), -sin(thetaR), sin(thetaR), cos(thetaR));
+    uvWarp = R * uvWarp;
+
+    // Hex-based inversion + ripple thresholding
+    int invert = 0;
+    const int kMaxIterations = 2;
+    const int kTurns = 9;
+    const int kNumRipples = 7;
+    float kRippleDelay = float(kNumRipples) / float(kTurns);
+    float kThickness = mix(0.6, 0.3, morph);
+    float kExponent  = mix(0.03, 0.65, morph);
+
+    for(int iter=0; iter<kMaxIterations; ++iter){
+        vec3 bary; ivec2 ij;
+        Cartesian2DToHexagonalTiling(uvWarp, bary, ij);
+
+        // Random hex gate
+        uint hexHash = HashOf(uint(floor(phase*8.0)), uint(iter), uint(ij.x), uint(ij.y));
+        if((hexHash & 1u) == 0u){
+            float alpha = PaddedSmoothStep(sin01(phase*25.0), 0.1, 0.8);
+            float dist = mix(max(max(abs(bary.x),abs(bary.y)),abs(bary.z)), length(uvView)*3.0, 1.0 - alpha);
+            float hsum = bary[hexHash%3u] + bary[(hexHash+1u)%3u];
+            if(dist > 1.0 - 0.015) invert ^= 1;
+            else if(fract(25.0*hsum) < 0.4) invert ^= 1;
+            if(iter==0) break;
+        }
+
+        // Ring ripples
+        float sigma=0.0, wsum=0.0;
+        for(int j=0;j<kTurns;++j){
+            float delta=float(j)/float(kTurns);
+            float theta=kTwoPi*delta;
+            for(int i=0;i<kNumRipples;++i){
+                float l = length(uvWarp - vec2(cos(theta), sin(theta))) * 0.6;
+                float weight = log2(1.0 / (l + 1e-10));
+                float ph = fract((float(j) + float(i)/kRippleDelay)/float(kTurns) + warpedTime);
+                sigma += fract(l - pow(ph, kExponent)) * weight;
+                wsum  += weight;
+            }
+        }
+        invert ^= int((sigma / max(1e-5, wsum)) > kThickness);
+
+        // Spiral out
+        float theta2=kTwoPi*(floor(sin01(-kTwoPi*phase)*7.0*6.0)/6.0);
+        uvWarp = R * (uvWarp + vec2(cos(theta2), sin(theta2)) * 0.6);
+        uvWarp *= kScale;
     }
 
-    lightingPass = true;
+    // Color burst calculation
+    float burstTrigger = 0.0;
 
-    if (!background) {
-        col = res.yzw;
-        vec3 nor = calcNormal(pos);
-
-        // Precomputed light directions
-        const vec3 lig = vec3(-0.33, 0.3, 0.25);
-        const vec3 lba = vec3(0.4472136, -0.8944272, -0.4472136); // normalized
-        vec3 hal = normalize( lig - rd );
-
-        float amb = sqrt(clamp( 0.5+0.5*nor.y, 0.0, 1.0 ));
-        float dif = clamp( dot( nor, lig ), 0.0, 1.0 );
-        float bac = clamp( dot( nor, lba ), 0.0, 1.0 )*clamp( 1.0-pos.y,0.0,1.0);
-        float fre = pow( clamp(1.0+dot(nor,rd),0.0,1.0), 2.0 );
-
-        // Conditional shadow calculation
-        if (dif > 0.001) dif *= softshadow( pos, lig, 0.001, 0.9 );
-
-        float spe = pow( clamp( dot( nor, hal ), 0.0, 1.0 ),16.0)* dif *
-        (0.04 + 0.96*pow( clamp(1.0+dot(hal,rd),0.0,1.0), 5.0 ));
-
-        // Simplified lighting calculation
-        vec3 lin = 2.8*dif*vec3(1.3,1.0,0.7) +
-        0.55*amb*vec3(0.4,0.6,1.15) +
-        1.55*bac*vec3(0.5,0.0,0.25) +
-        0.25*fre*vec3(1.0);
-
-        col = col*lin + 5.0*spe*vec3(1.1,0.9,0.7);
+    // Velocity-based bursts
+    if(velocity > 0.7) {
+        burstTrigger += (velocity - 0.7) * 3.0;
     }
+
+    // High frequency bursts
+    if(highs > 0.6) {
+        burstTrigger += (highs - 0.6) * 2.5;
+    }
+
+    // Random burst gates
+    float burstHash = HashToFloat(HashOf(uint(floor(gTime * 8.0)), uint(floor(xy.x/64.0)), uint(floor(xy.y/64.0))));
+    if(burstHash > 0.95) {
+        burstTrigger += 1.5;
+    }
+
+    // Time-based pulse bursts
+    float pulse = sin(gTime * 12.0 + length(uvWarp) * 8.0);
+    if(pulse > 0.8 && velocity > 0.5) {
+        burstTrigger += (pulse - 0.8) * 2.0;
+    }
+
+    // Base dark color (much darker than original)
+    vec3 baseA = vec3(0.05);  // Very dark
+    vec3 baseB = vec3(0.02, 0.03, 0.08);  // Dark blue-ish
+    vec3 sigma = vec3(float(invert!=0));
+    vec3 col = mix(baseA - sigma * 0.03, sigma * mix(baseB, vec3(0.08), sqr(beta)), beta * 0.6);
+
+    // Apply color burst
+    if(burstTrigger > 0.1) {
+        float burstIntensity = smoothstep(0.1, 2.0, burstTrigger);
+        vec3 burstCol = BurstColor(gTime * 2.0 + length(uvWarp) * 3.0, velocity);
+
+        // Burst mask - more likely at pattern edges
+        float burstMask = 1.0;
+        if(invert != 0) {
+            burstMask *= 1.5; // Brighter bursts on white areas
+        }
+
+        // Distance-based burst falloff
+        float distMask = 1.0 - smoothstep(0.0, 1.0, length(uvWarp * 0.5));
+        burstMask *= distMask;
+
+        col = mix(col, burstCol, burstIntensity * burstMask * 0.8);
+    }
+
+    // Subtle dark glow (reduced from original)
+    float glow = 0.0;
+    for(int k=0;k<4;k++){
+        float a = float(k) * (kTwoPi/4.0);
+        vec2  off = 0.002 * vec2(cos(a), sin(a));
+        float samp = n2((uvWarp + off)*50.0 + gTime);
+        glow += smoothstep(0.8, 1.0, samp);
+    }
+    glow /= 4.0;
+    col += vec3(glow) * 0.02; // Much subtler glow
 
     return col;
 }
 
-float vmul(vec2 v) { return v.x * v.y; }
+// ===================================================================================
+// Main
+// ===================================================================================
+void main(){
+    // Resolution & coords
+    vec2 iRes = (pc.render_w>0u && pc.render_h>0u) ? vec2(pc.render_w, pc.render_h) : vec2(800.0,600.0);
+    vec2 fragCoord = fragUV * iRes;
 
-// ─────────────────────────────────────────────────────
-// Optimized mainImage with reduced AA and motion blur
-// ─────────────────────────────────────────────────────
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    // Globals
+    SetGlobals(fragCoord, iRes, pc.time);
 
-    float mTime = (iTime + TIME_OFFSET) / LOOP_DURATION;
-    time = mTime;
+    // Audio knobs
+    float A = clamp(pc.note_velocity, 0.0, 1.0);
+    float M = clamp(pc.cc1, 0.0, 1.0);
+    float H = clamp(pc.cc74, 0.0, 1.0);
 
-    vec2 o = vec2(0.0);
-    vec3 col = vec3(0.0);
+    // Screen-space interference
+    vec2 xy = fragCoord * float(kScreenDownsample);
+    vec3 tint = vec3(0.4); // Start darker
+    bool isDisplaced = Interfere(xy, tint, iRes, M, H);
 
-    // Optimized AA + motion blur
-    #if AA > 1
-    for( int m=0; m<AA; m++ )
-    for( int n=0; n<AA; n++ )
-    {
-        o = vec2(float(m),float(n)) / float(AA) - 0.5;
-        float d = 0.5*vmul(sin(fragCoord.xy * vec2(0.021, 0.019))); // Optimized noise
-        time = mTime - 0.00416667*(float(m*AA+n)+d)/float(AA*AA-1); // 1.0/24.0 precomputed
-        #endif
+    // Ordered dither for "damage"
+    uint tHashA = HashOf(uint(floor(gTime + sin(gTime)*1.8)));
+    uint tHashB = HashOf(uint(floor(xy.x/96.0)));
+    uint tHashC = HashOf(uint(floor(xy.y/96.0)));
+    int denom  = int(HashOf(tHashA, tHashB, tHashC) & 127u);
+    denom = max(1, denom);
+    ivec2 xyDither = ivec2(xy) / denom;
+    float jpegDamage = OrderedDither(xyDither);
 
-        time = mod(time, 1.0);
-        vec2 p = (-iResolution.xy + 2.0 * (fragCoord + o)) / iResolution.y;
-        col += render(p);
-
-        #if AA > 1
+    // Supersampling
+    const int kAA = 2; // Reduced for performance since it's darker
+    vec3 rgb = vec3(0.0);
+    float blendSum = 0.0;
+    int idx = 0;
+    for(int i=0;i<kAA;i++){
+        for(int j=0;j<kAA;j++,idx++){
+            vec2 xyAA = xy + vec2(float(i), float(j))/float(kAA);
+            float b;
+            rgb += Render(xyAA, idx, kAA*kAA, isDisplaced, jpegDamage, M, H, A, b);
+            blendSum += b;
+        }
     }
-    col *= 1.0/float(AA*AA); // Use multiplication instead of division
-    #endif
+    rgb /= float(kAA*kAA);
+    float blend = blendSum / float(kAA*kAA);
 
-    // Optimized gamma correction
-    col = pow( col, vec3(0.4545) );
+    // Dark grading (crush blacks, enhance color separation)
+    vec3 hsv = RGBToHSV(rgb);
+    hsv.x += -sin((hsv.x + 0.08) * kTwoPi) * 0.12; // More color shift
+    hsv.y = min(1.0, hsv.y * 1.3); // Boost saturation
+    hsv.z = pow(hsv.z, 1.4); // Crush blacks more
+    rgb = HSVToRGB(hsv);
 
-    fragColor = vec4(col, 1.0);
-}
-
-// ─────────────────────────────────────────────────────
-// Pipeline main
-// ─────────────────────────────────────────────────────
-void main() {
-    vec2 fragCoord = frag_uv * iResolution.xy;
-
-    vec4 col;
-    mainImage(col, fragCoord);
-
-    // Optimized brightness & gamma
-    float bright = mix(0.85, 1.55, pc.cc74);
-    float gammaC = 1.0 + 0.7 * pc.cc1;
-    col.rgb = pow(col.rgb * bright, vec3(gammaC));
-
-    // MIDI note tinting - optimized trig calculations
-    if(pc.note_count > 0u) {
-        float noteTint = float(pc.last_note) * 0.007874016; // 1/127 precomputed
-        float phase = noteTint * PI;
-        vec3 tintColor = vec3(
-        sin(phase),
-        sin(phase + 1.047197551), // PI/3 precomputed
-        sin(phase + 2.094395102)  // 2*PI/3 precomputed
-        ) * (0.2 * pc.note_velocity);
-        col.rgb += tintColor;
+    // Displacement-triggered quantization (more aggressive)
+    if(isDisplaced){
+        const float kColourQuantisation = 3.0; // Fewer levels for harsher look
+        vec3 q = rgb * kColourQuantisation;
+        if(fract(q.r) > jpegDamage) q.r += 1.0;
+        if(fract(q.g) > jpegDamage) q.g += 1.0;
+        if(fract(q.b) > jpegDamage) q.b += 1.0;
+        rgb = floor(q) / kColourQuantisation;
     }
 
-    out_color = vec4(clamp(col.rgb, 0.0, 3.0), 1.0);
+    // Strong dark vignette
+    rgb *= DarkVignette(xy);
+
+    // Multiply by tint for interference darkening
+    rgb *= tint;
+
+    // Reduce vertex energy effect
+    rgb *= (1.0 + 0.05 * clamp(vertexEnergy, 0.0, 1.0));
+
+    // Final dark clamp
+    rgb = clamp(rgb, 0.0, 1.0);
+
+    outColor = vec4(rgb, 1.0);
 }
