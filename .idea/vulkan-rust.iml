@@ -2,14 +2,15 @@
 <module type="EMPTY_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
-      <sourceFolder url="file://$MODULE_DIR$/vulkan-rust-example/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/vulkan-triangle-rs/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/vulkan-tutorial-rs/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/test/vulkan_test_claude_midi/src" isTestSource="false" />
-      <excludeFolder url="file://$MODULE_DIR$/vulkan-rust-example/target" />
-      <excludeFolder url="file://$MODULE_DIR$/vulkan-triangle-rs/target" />
-      <excludeFolder url="file://$MODULE_DIR$/vulkan-tutorial-rs/target" />
-      <excludeFolder url="file://$MODULE_DIR$/test/vulkan_test_claude_midi/target" />
+      <sourceFolder url="file://$MODULE_DIR$/resources/vulkan-rust-example/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/resources/vulkan-triangle-rs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/resources/vulkan-tutorial-rs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/resources/vulkan-rust-example/target" />
+      <excludeFolder url="file://$MODULE_DIR$/resources/vulkan-triangle-rs/target" />
+      <excludeFolder url="file://$MODULE_DIR$/resources/vulkan-tutorial-rs/target" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/vulkan_test_claude_midi/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
