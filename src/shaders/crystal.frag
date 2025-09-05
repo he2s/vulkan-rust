@@ -341,7 +341,7 @@ float mids, float highs, float velocity, out float blendOut)
         Cartesian2DToHexagonalTiling(uvWarp, bary, ij);
 
         // Random hex gate
-        uint hexHash = HashOf(uint(floor(phase*8.0)), uint(iter), uint(ij.x), uint(ij.y));
+        uint hexHash = HashOf(uint(floor(phase*1.0)), uint(iter), uint(ij.x), uint(ij.y));
         if((hexHash & 1u) == 0u){
             float alpha = PaddedSmoothStep(sin01(phase*25.0), 0.1, 0.8);
             float dist = mix(max(max(abs(bary.x),abs(bary.y)),abs(bary.z)), length(uvView)*3.0, 1.0 - alpha);
@@ -430,7 +430,7 @@ float mids, float highs, float velocity, out float blendOut)
         glow += smoothstep(0.8, 1.0, samp);
     }
     glow /= 4.0;
-    col += vec3(glow) * 0.02; // Much subtler glow
+    col += vec3(glow) * 0.01; // Much subtler glow
 
     return col;
 }
@@ -490,7 +490,7 @@ void main(){
 
     // Displacement-triggered quantization (more aggressive)
     if(isDisplaced){
-        const float kColourQuantisation = 3.0; // Fewer levels for harsher look
+        const float kColourQuantisation = 8.0; // Fewer levels for harsher look
         vec3 q = rgb * kColourQuantisation;
         if(fract(q.r) > jpegDamage) q.r += 1.0;
         if(fract(q.g) > jpegDamage) q.g += 1.0;
