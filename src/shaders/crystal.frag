@@ -336,7 +336,7 @@ float mids, float highs, float velocity, out float blendOut)
     float kThickness = mix(0.6, 0.3, morph);
     float kExponent  = mix(0.03, 0.65, morph);
 
-    for(int iter=0; iter<kMaxIterations; ++iter){
+    for(int iter=0; iter<0; ++iter){
         vec3 bary; ivec2 ij;
         Cartesian2DToHexagonalTiling(uvWarp, bary, ij);
 
@@ -415,7 +415,7 @@ float mids, float highs, float velocity, out float blendOut)
         }
 
         // Distance-based burst falloff
-        float distMask = 1.0 - smoothstep(0.0, 1.0, length(uvWarp * 0.5));
+        float distMask = 0.5 - smoothstep(0.0, 1.0, length(uvWarp * 0.5));
         burstMask *= distMask;
 
         col = mix(col, burstCol, burstIntensity * burstMask * 0.8);
@@ -423,7 +423,7 @@ float mids, float highs, float velocity, out float blendOut)
 
     // Subtle dark glow (reduced from original)
     float glow = 0.0;
-    for(int k=0;k<4;k++){
+    for(int k=0;k<10;k++){
         float a = float(k) * (kTwoPi/4.0);
         vec2  off = 0.002 * vec2(cos(a), sin(a));
         float samp = n2((uvWarp + off)*50.0 + gTime);
@@ -466,7 +466,7 @@ void main(){
     float jpegDamage = OrderedDither(xyDither);
 
     // Supersampling
-    const int kAA = 2; // Reduced for performance since it's darker
+    const int kAA = 1; // Reduced for performance since it's darker
     vec3 rgb = vec3(0.0);
     float blendSum = 0.0;
     int idx = 0;
@@ -484,13 +484,13 @@ void main(){
     // Dark grading (crush blacks, enhance color separation)
     vec3 hsv = RGBToHSV(rgb);
     hsv.x += -sin((hsv.x + 0.08) * kTwoPi) * 0.12; // More color shift
-    hsv.y = min(1.0, hsv.y * 1.3); // Boost saturation
+    hsv.y = min(1.0, hsv.y * 1.7); // Boost saturation
     hsv.z = pow(hsv.z, 1.4); // Crush blacks more
     rgb = HSVToRGB(hsv);
 
     // Displacement-triggered quantization (more aggressive)
     if(isDisplaced){
-        const float kColourQuantisation = 8.0; // Fewer levels for harsher look
+        const float kColourQuantisation = 20.0; // Fewer levels for harsher look
         vec3 q = rgb * kColourQuantisation;
         if(fract(q.r) > jpegDamage) q.r += 1.0;
         if(fract(q.g) > jpegDamage) q.g += 1.0;
