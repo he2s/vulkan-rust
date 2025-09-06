@@ -1,5 +1,10 @@
 mod osc;
-use osc::{OscManager, OscConfig, OscState}; // Add this import
+
+use osc::{
+    OscManager,
+    OscConfig,
+    OscState
+};
 use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
@@ -24,8 +29,6 @@ use winit::{
 use midir::{MidiInput, Ignore};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-
-// Audio imports
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rustfft::{FftPlanner, num_complex::Complex32, Fft};
 
@@ -82,7 +85,7 @@ pub struct Config {
     #[serde(default)]
     pub shader: ShaderConfig,
     #[serde(default)]
-    pub osc: OscConfig, // Add this line
+    pub osc: OscConfig,
 }
 
 #[derive(Deserialize, Serialize)]
