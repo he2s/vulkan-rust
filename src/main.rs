@@ -31,6 +31,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rustfft::{FftPlanner, num_complex::Complex32, Fft};
+use std::arch::x86_64::*;
 
 // Constants
 const DEFAULT_WIDTH: u32 = 800;
@@ -464,6 +465,32 @@ impl AudioState {
     fn calculate_rms(&self, buffer: &[f32]) -> f32 {
         let sum_squares: f32 = buffer.iter().map(|x| x * x).sum();
         (sum_squares / buffer.len() as f32).sqrt()
+    }
+    #[target_feature(enable = "avx2")]
+    unsafe fn calculate_rms_simd(&self, buffer: &[f32]) -> f32 {
+        let len = buffer.len();
+        let simd_len = len - (len % 8);
+        let mut sum = _mm256_setzero_ps();
+
+        for i in (0..simd_len).step_by(8) {
+            let values = _mm256_loadu_ps(buffer.as_ptr().add(i));
+            let squared = _mm256_mul_ps(values, values);
+            sum = _mm256_add_ps(sum, squared);
+        }
+
+        // Sum the SIMD register elements
+        let mut result = 0.0f32;
+        let sum_array = std::mem::transmute::<__m256, [f32; 8]>(sum);
+        for val in sum_array.iter() {
+            result += val;
+        }
+
+        // Handle remaining elements
+        for i in simd_len..len {
+            result += buffer[i] * buffer[i];
+        }
+
+        (result / len as f32).sqrt()
     }
 
     // OPTIMIZATION: Use cached FFT planner and reuse buffers
