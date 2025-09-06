@@ -8,20 +8,20 @@ resizable = true
 [midi]
 enabled = true
 auto_connect = true
-port_name = "ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2 24:1"  # Uncomment to connect to specific MIDI device
+port_name = "ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2 24:1"
 
 [graphics]
 vsync = true
-validation_layers = true  # Enabled in debug builds by default
+validation_layers = true
 
 [audio]
 enabled = true
 
 [shader]
-preset = "terrain"  # Options: "torus", "terrain", "crystal", "custom"
-custom_vertex_path = "shaders/custom.vert"  # Only used when preset = "custom"
-custom_fragment_path = "shaders/custom.frag"  # Only used when preset = "custom"
-allow_runtime_switching = true  # Enable TAB key to cycle shaders
+preset = "terrain"
+custom_vertex_path = "shaders/custom.vert"
+custom_fragment_path = "shaders/custom.frag"
+allow_runtime_switching = true
 
 #[osc]
 #enabled = true
