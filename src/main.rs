@@ -1,10 +1,6 @@
-mod osc;
-
-use osc::{
-    OscManager,
-    OscConfig,
-    OscState
-};
+use crate::input::osc::OscConfig;
+use crate::input::osc::OscManager;
+use crate::input::osc::OscState;
 use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
@@ -32,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rustfft::{FftPlanner, num_complex::Complex32, Fft};
 use std::arch::x86_64::*;
+
+mod input;
 
 // Constants
 const DEFAULT_WIDTH: u32 = 800;
