@@ -289,16 +289,16 @@ impl ShaderSources {
         // Fallback to embedded sources (release/default)
         match preset {
             ShaderPreset::Torus => Ok(Self {
-                vertex: include_str!("shaders/fullscreen.vert").to_string(),
-                fragment: include_str!("shaders/gradient.frag").to_string(),
+                vertex: include_str!("../shaders/fullscreen.vert").to_string(),
+                fragment: include_str!("../shaders/gradient.frag").to_string(),
             }),
             ShaderPreset::Terrain => Ok(Self {
-                vertex: include_str!("shaders/terrain.vert").to_string(),
-                fragment: include_str!("shaders/terrain.frag").to_string(),
+                vertex: include_str!("../shaders/terrain.vert").to_string(),
+                fragment: include_str!("../shaders/terrain.frag").to_string(),
             }),
             ShaderPreset::Crystal => Ok(Self {
-                vertex: include_str!("shaders/crystal.vert").to_string(),
-                fragment: include_str!("shaders/crystal.frag").to_string(),
+                vertex: include_str!("../shaders/crystal.vert").to_string(),
+                fragment: include_str!("../shaders/crystal.frag").to_string(),
             }),
             ShaderPreset::Custom => Err(anyhow!("Custom shader requires paths")),
         }
