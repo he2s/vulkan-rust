@@ -42,7 +42,7 @@ impl Default for OscConfig {
 
 const fn default_osc_port() -> u16 { 7000 }
 fn default_osc_address() -> String { "127.0.0.1".to_string() }
-fn default_channel1_path() -> String { "/ch1".to_string() }
+fn default_channel1_path() -> String { "/FX1_L".to_string() }
 fn default_channel2_path() -> String { "/ch2".to_string() }
 const fn default_smoothing() -> f32 { 0.1 }
 

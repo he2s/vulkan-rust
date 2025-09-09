@@ -23,7 +23,7 @@ custom_vertex_path = "shaders/custom.vert"
 custom_fragment_path = "shaders/custom.frag"
 allow_runtime_switching = true
 
-#[osc]
-#enabled = true
-#port = 8000
-#address = "0.0.0.0"  #
+[osc]
+enabled = true
+port = 8001
+address = "0.0.0.0"  #

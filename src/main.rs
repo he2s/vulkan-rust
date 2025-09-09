@@ -1,3 +1,4 @@
+use crate::input::midi::MidiConfig;
 use crate::input::osc::OscConfig;
 use crate::input::osc::OscManager;
 use crate::input::osc::OscState;
@@ -102,16 +103,6 @@ pub struct WindowConfig {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct MidiConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub auto_connect: bool,
-    #[serde(default)]
-    pub port_name: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
 pub struct GraphicsConfig {
     #[serde(default = "default_true")]
     pub vsync: bool,
@@ -167,16 +158,6 @@ impl Default for WindowConfig {
             title: default_title(),
             fullscreen: false,
             resizable: default_true(),
-        }
-    }
-}
-
-impl Default for MidiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_true(),
-            auto_connect: true,
-            port_name: None,
         }
     }
 }

@@ -35,7 +35,7 @@ void main() {
 
     vertexEnergy = pc.note_velocity * 0.8 + pc.cc1 * 0.2;
 
-    gl_Position = vec4(pos, 0.0, 1.0);
+    gl_Position = vec4(pos, 0.0, 1.0) ;//+ vec4(0.0, 0.0, pc.cc1, 1.0);
     fragUV = uv;
     worldPos = vec3(pos, 0.0);
 }
