@@ -24,35 +24,115 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-#define PI 3.14159265359
+// Marching parameters
+#define MAXSTEPS 50
+#define HITTHRESHOLD 0.009
+#define FAR 25.0
 
-// --------------------------------------------------------
-// Noise functions
-// --------------------------------------------------------
+// Audio-reactive IFS parameters
+#define BASE_NIFS 6
+#define BASE_SCALE 2.3
+#define BASE_TRANSLATE 3.5
 
-vec3 hash33(vec3 p) {
-    float n = sin(dot(p, vec3(7, 157, 113)));
-    return fract(vec3(2097152, 262144, 32768)*n)*2. - 1.;
+mat2 rot(float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat2(c, -s, s, c);
 }
 
-float tetraNoise(in vec3 p) {
-    vec3 i = floor(p + dot(p, vec3(0.333333)));
-    p -= i - dot(i, vec3(0.166666));
-    vec3 i1 = step(p.yzx, p), i2 = max(i1, 1.0-i1.zxy);
-    i1 = min(i1, 1.0-i1.zxy);
-    vec3 p1 = p - i1 + 0.166666, p2 = p - i2 + 0.333333, p3 = p - 0.5;
-    vec4 v = max(0.5 - vec4(dot(p,p), dot(p1,p1), dot(p2,p2), dot(p3,p3)), 0.0);
-    vec4 d = vec4(dot(p, hash33(i)), dot(p1, hash33(i + i1)), dot(p2, hash33(i + i2)), dot(p3, hash33(i + 1.)));
-    return clamp(dot(d, v*v*v*8.)*1.732 + .5, 0., 1.);
+vec4 sd2d(vec2 p, float o) {
+    // Audio-reactive parameters
+    float energyLevel = clamp(pc.note_velocity, 0.0, 1.0);
+    float pitchFactor = clamp(pc.pitch_bend, -1.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
+
+    // Time with audio reactivity
+    float timeScale = mix(0.5, 2.0, modulation);
+    float iTime = pc.time * timeScale;
+    float time = 0.2 * o + 0.6 * iTime;
+
+    float s = mix(0.4, 0.7, energyLevel);
+    p *= s;
+
+    // Audio-reactive radius
+    float RADIUS = (1.0 + sin(iTime)) * mix(0.8, 1.5, brightness);
+
+    // Dynamic IFS iterations based on note count
+    int NIFS = BASE_NIFS + int(pc.note_count);
+    NIFS = min(NIFS, 12); // Cap to prevent performance issues
+
+    // Audio-reactive scale and translate
+    float SCALE = BASE_SCALE + pitchFactor * 0.5;
+    float TRANSLATE = BASE_TRANSLATE + modulation * 2.0;
+
+    int i;
+    vec3 col = vec3(0.0);
+
+    // Initial twist with audio reactivity
+    p = p * rot(-0.4 * time + energyLevel * 1.5);
+
+    for (i = 0; i < NIFS; i++) {
+        if (p.x < 0.0) {
+            p.x = -p.x;
+            col.r++;
+        }
+
+        // Rotation amount varies with audio
+        float rotAmount = 0.9 * sin(time) + pitchFactor * 0.3;
+        p = p * rot(rotAmount);
+
+        if (p.y < 0.0) {
+            p.y = -p.y;
+            col.g++;
+        }
+
+        if (p.x - p.y < 0.0) {
+            p.xy = p.yx;
+            col.b++;
+        }
+
+        p = p * SCALE - TRANSLATE;
+
+        // Additional rotation with brightness control
+        p = p * rot(0.3 * iTime + brightness * 0.5);
+    }
+
+    float d = 0.425 * (length(p) - RADIUS) * pow(SCALE, float(-i)) / s;
+    col /= float(NIFS);
+
+    // Audio-reactive color mixing
+    vec3 color1 = mix(vec3(0.7, col.g, 0.2), vec3(0.9, col.g * 1.2, 0.1), energyLevel);
+    vec3 color2 = mix(vec3(0.2, col.r, 0.7), vec3(0.1, col.r * 1.3, 0.9), brightness);
+    vec3 oc = mix(color1, color2, col.b + modulation * 0.3);
+
+    // Boost saturation with high energy
+    if (energyLevel > 0.7) {
+        oc *= 1.0 + (energyLevel - 0.7) * 1.5;
+    }
+
+    return vec4(oc, d);
 }
 
-// --------------------------------------------------------
-// Wave interference pattern
-// --------------------------------------------------------
+vec4 map(vec3 p) {
+    return sd2d(p.xz, p.y);
+}
 
-float waveSource(vec2 p, vec2 center, float freq, float phase, float amplitude) {
-    float dist = length(p - center);
-    return amplitude * sin(dist * freq + phase);
+float shadow(vec3 ro, vec3 rd) {
+    float h = 0.0;
+    float k = mix(2.0, 5.0, clamp(pc.cc74, 0.0, 1.0)); // Audio-reactive shadow softness
+    float res = 1.0;
+    float t = 0.2; // bias
+
+    for (int i = 0; t < 15.0; i++) {
+        h = map(ro + rd * t).w;
+        res = min(res, k * h / t);
+        if (h < HITTHRESHOLD) {
+            break;
+        }
+        t = t + h;
+    }
+    return clamp(res + 0.05, 0.0, 1.0);
 }
 
 void main() {
@@ -62,122 +142,94 @@ void main() {
     : vec2(800.0, 600.0);
 
     vec2 fragCoord = fragUV * iResolution;
-    vec2 uv = (-iResolution.xy + 2.0 * fragCoord.xy) / iResolution.y;
 
     // Audio-reactive parameters
     float energyLevel = clamp(pc.note_velocity, 0.0, 1.0);
     float pitchFactor = clamp(pc.pitch_bend, -1.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
-    float brightness = clamp(pc.cc74, 0.0, 1.0);
 
-    // Time with audio reactivity
-    float timeScale = mix(1.0, 3.0, modulation);
+    // Time scaling
+    float timeScale = mix(0.3, 1.5, modulation);
     float iTime = pc.time * timeScale;
 
-    // Wave sources - positions and properties change with audio
-    vec2 source1 = vec2(-0.5, 0.0);
-    vec2 source2 = vec2(0.5, 0.0);
-    vec2 source3 = vec2(0.0, 0.4);
-    vec2 source4 = vec2(0.0, -0.4);
+    // Camera with audio reactivity
+    float height = mix(-0.6, -0.2, energyLevel);
+    float rot = iTime * mix(0.05, 0.2, modulation);
+    float dist = mix(7.0, 12.0, abs(pitchFactor)) + 1.0 * sin(0.5 * iTime);
 
-    // OSC/Mouse input moves wave sources
+    // OSC/Mouse input affects camera position
+    vec2 cameraOffset = vec2(0.0);
     if (pc.osc_ch1 != 0.0 || pc.osc_ch2 != 0.0) {
-        source1 += vec2(pc.osc_ch1, pc.osc_ch2) * 0.3;
-        source2 += vec2(-pc.osc_ch1, pc.osc_ch2) * 0.3;
+        cameraOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 3.0;
     } else if (pc.mouse_pressed > 0u) {
         vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
-        vec2 mouseOffset = (mouseNorm - 0.5) * 0.8;
-        source1 += mouseOffset;
-        source2 -= mouseOffset;
+        cameraOffset = (mouseNorm - 0.5) * 6.0;
     }
 
-    // Add orbital motion to sources
-    float orbitalSpeed = mix(0.5, 2.0, energyLevel);
-    float orbit1 = iTime * orbitalSpeed;
-    float orbit2 = iTime * orbitalSpeed * 1.618; // Golden ratio
+    vec3 ro = dist * vec3(cos(rot), height, sin(rot)) + vec3(cameraOffset.x, 0.0, cameraOffset.y);
+    vec3 lookAt = vec3(0.0, 0.0, 0.0);
+    vec3 fw = normalize(lookAt - ro);
 
-    source1 += vec2(cos(orbit1), sin(orbit1)) * 0.2;
-    source2 += vec2(cos(orbit2), sin(orbit2)) * 0.15;
-    source3 += vec2(cos(orbit1 * 0.7), sin(orbit1 * 0.7)) * 0.1;
-    source4 += vec2(cos(orbit2 * 0.8), sin(orbit2 * 0.8)) * 0.12;
+    // Tilting camera for audio reactivity
+    vec3 tiltAxis = mix(vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.5), energyLevel);
+    vec3 right = normalize(cross(tiltAxis, fw));
+    vec3 up = normalize(cross(fw, right));
+    right = normalize(cross(up, fw));
 
-    // Wave frequencies based on audio
-    float baseFreq = mix(15.0, 40.0, brightness);
-    float freq1 = baseFreq;
-    float freq2 = baseFreq * (1.0 + pitchFactor * 0.5);
-    float freq3 = baseFreq * 0.7;
-    float freq4 = baseFreq * 1.3;
+    // Light with audio reactivity
+    rot += sin(iTime) * mix(0.1, 0.4, energyLevel);
+    vec3 lightPos = dist * vec3(cos(rot), height, sin(rot));
 
-    // Wave phases
-    float phase1 = iTime * mix(2.0, 8.0, energyLevel);
-    float phase2 = iTime * mix(1.5, 6.0, energyLevel) + PI * 0.25;
-    float phase3 = iTime * mix(1.8, 7.0, energyLevel) + PI * 0.5;
-    float phase4 = iTime * mix(2.2, 9.0, energyLevel) + PI * 0.75;
+    // Simplified single-sample raymarch for performance
+    float t = 0.0;
+    float smallest = 500.0;
+    vec3 pos, closest;
+    vec3 sdfCol;
 
-    // Amplitudes based on note count and energy
-    float amp1 = mix(0.3, 1.0, energyLevel);
-    float amp2 = mix(0.25, 0.8, energyLevel);
-    float amp3 = (pc.note_count > 1u) ? mix(0.2, 0.6, modulation) : 0.0;
-    float amp4 = (pc.note_count > 2u) ? mix(0.15, 0.5, brightness) : 0.0;
+    vec2 uv = fragCoord / iResolution.xy;
+    uv -= 0.5;
+    uv.x *= iResolution.x / iResolution.y;
 
-    // Calculate interference pattern
-    float wave = 0.0;
-    wave += waveSource(uv, source1, freq1, phase1, amp1);
-    wave += waveSource(uv, source2, freq2, phase2, amp2);
-    wave += waveSource(uv, source3, freq3, phase3, amp3);
-    wave += waveSource(uv, source4, freq4, phase4, amp4);
+    // Focal length varies with brightness
+    float focalLength = mix(0.4, 0.7, clamp(pc.cc74, 0.0, 1.0));
+    vec3 rd = normalize(fw * focalLength + right * uv.x + up * uv.y);
 
-    // Add some standing wave patterns
-    float standingH = sin(uv.x * mix(8.0, 20.0, brightness) + iTime * 2.0) *
-    cos(uv.y * mix(6.0, 15.0, modulation) + iTime * 1.5) * 0.3;
-    float standingV = cos(uv.x * mix(10.0, 25.0, modulation) + iTime * 2.5) *
-    sin(uv.y * mix(8.0, 18.0, brightness) + iTime * 1.8) * 0.3;
+    for (int i = 0; i < MAXSTEPS; i++) {
+        pos = ro + rd * t;
+        vec4 mr = map(pos);
+        float d = mr.w;
 
-    wave += standingH + standingV;
+        if (d < smallest) {
+            smallest = d;
+            closest = pos;
+            sdfCol = mr.rgb;
+        }
 
-    // Add noise for organic texture
-    float noise1 = tetraNoise(vec3(uv * 4.0, iTime * 0.1)) * 0.2;
-    float noise2 = tetraNoise(vec3(uv * 12.0, iTime * 0.05)) * 0.1;
-
-    wave += noise1 + noise2;
-
-    // Distance-based modulation (creates circular patterns)
-    float centerDist = length(uv);
-    float distMod = sin(centerDist * mix(8.0, 20.0, brightness) - iTime * 3.0) * 0.2;
-    wave += distMod;
-
-    // Pitch bend creates asymmetric distortion
-    if (abs(pitchFactor) > 0.1) {
-        float skew = pitchFactor * 0.5;
-        wave += sin(uv.x * 15.0 + skew) * sin(uv.y * 12.0 - skew) * 0.3 * abs(pitchFactor);
+        if (abs(d) < HITTHRESHOLD || t > FAR) {
+            break;
+        }
+        t += d;
     }
 
-    // Convert to isolines
-    float spacing = mix(1./20., 1./50., brightness);
-    float lines = mod(wave * 0.5 + 0.5, spacing) / spacing;
-    lines = min(lines * 2., 1.) - max(lines * 2. - 1., 0.);
-    lines /= fwidth(wave / spacing);
-    lines /= 2.;
+    pos = closest;
+    vec3 col;
 
-    // Audio-reactive line weight with center bias
-    float weight = mix(1.0, 4.0, energyLevel);
-    weight *= mix(0.5, 1.5, smoothstep(1.0, 0.2, centerDist)); // Thicker in center
-    weight *= iResolution.y / 287.;
+    if (t < FAR) {
+        col = sdfCol;
+        vec3 toLight = normalize(lightPos - pos);
+        float s = shadow(pos, toLight);
+        col *= s;
+        col = mix(col, 1.5 * col, 1.0 - s);
 
-    lines -= weight - 1.;
-
-    // High modulation creates dramatic inversions
-    if (modulation > 0.8) {
-        float inversionAmount = (modulation - 0.8) * 5.0;
-        lines = mix(lines, 1.0 - lines, inversionAmount);
+        // Audio-reactive brightness boost
+        col *= mix(0.8, 1.8, energyLevel);
+    } else {
+        col = vec3(0.0);
     }
 
-    // Edge fading for focus
-    float edgeFade = smoothstep(1.8, 1.0, centerDist);
-    lines *= edgeFade;
+    // Add vertex energy contribution
+    col *= (1.0 + 0.2 * clamp(vertexEnergy, 0.0, 1.0));
 
-    // Brightness affects contrast
-    lines = mix(lines * 0.7, lines, brightness);
-
-    outColor = vec4(vec3(lines), 1.0);
+    // Output color with depth in alpha for post-processing
+    outColor = vec4(col, t / FAR);
 }
