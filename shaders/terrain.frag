@@ -118,20 +118,21 @@ void main() {
     float modulation = clamp(pc.cc1, 0.0, 1.0);
     float brightness = clamp(pc.cc74, 0.0, 1.0);
 
+    // Audio-reactive camera with conservative ranges
     float timeScale = mix(0.4, 1.2, modulation);
     float iTime = pc.time * timeScale;
 
-    // Camera setup
-    float height = mix(-0.4, -0.2, energyLevel * 0.5);
-    float rot = iTime * mix(0.03, 0.1, modulation);
-    float dist = mix(8.0, 11.0, abs(pitchFactor) * 0.7) + 0.5 * sin(0.3 * iTime);
+    float height = mix(-0.4, -0.2, energyLevel * 0.3);
+    float rot = iTime * mix(0.03, 0.08, modulation);
+    float dist = mix(8.5, 10.5, abs(pitchFactor) * 0.5) + 0.3 * sin(0.3 * iTime);
 
+    // Subtle camera offset
     vec2 cameraOffset = vec2(0.0);
     if (pc.osc_ch1 != 0.0 || pc.osc_ch2 != 0.0) {
-        cameraOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 1.5;
+        cameraOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 1.0;
     } else if (pc.mouse_pressed > 0u) {
         vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
-        cameraOffset = (mouseNorm - 0.5) * 3.0;
+        cameraOffset = (mouseNorm - 0.5) * 2.0;
     }
 
     vec3 ro = dist * vec3(cos(rot), height, sin(rot)) + vec3(cameraOffset.x, 0.0, cameraOffset.y);
@@ -141,10 +142,10 @@ void main() {
     vec3 right = normalize(cross(vec3(0.0, 1.0, 0.8), fw));
     vec3 up = normalize(cross(fw, right));
 
-    float lightRot = rot + energyLevel * 1.5;
-    vec3 lightPos = ro + vec3(cos(lightRot) * 3.0, 2.0, sin(lightRot) * 3.0);
+    float lightRot = rot + energyLevel * 1.0;
+    vec3 lightPos = ro + vec3(cos(lightRot) * 2.5, 1.5, sin(lightRot) * 2.5);
 
-    // Single sample rendering
+    // Standard rendering
     vec2 uv = fragCoord / iResolution.xy;
     uv -= 0.5;
     uv.x *= iResolution.x / iResolution.y;
@@ -174,14 +175,6 @@ void main() {
     }
 
     vec3 col = vec3(0.0);
-    float depth = t / FAR;
-
-    // DEBUG: Force blur parameters to visible ranges for testing
-    float focusPoint = 0.5;        // Fixed focus point
-    float focusRange = 0.3;        // Fixed focus range
-
-    float focusDistance = abs(depth - focusPoint);
-    float blurAmount = smoothstep(0.0, focusRange, focusDistance);
 
     if (hit) {
         col = sdfCol;
@@ -203,27 +196,22 @@ void main() {
             col += bloom;
         }
 
-        // SIMPLIFIED AGGRESSIVE BLUR TEST
-        if (blurAmount > 0.1) {
-            // Very obvious blur effect for testing
-            col *= 0.5;                    // Dim significantly
-            col = mix(col, vec3(0.5), 0.7); // Mix with gray
-            col.r += 0.3 * blurAmount;     // Add red tint to show blur
-        }
-
     } else {
-        // Background - also show depth info
-        col = vec3(depth, depth, depth); // Show depth as grayscale
+        // Background
+        float bgGlow = smoothstep(1.0, 0.3, length(uv));
+        col = mix(vec3(0.01, 0.005, 0.02), vec3(0.08, 0.03, 0.12), energyLevel * bgGlow);
     }
 
-    // DEBUG: Show blur amount as green channel in non-hit areas
-    if (!hit) {
-        col.g = blurAmount;
-    }
-
-    // Vignette
+    // Post-processing
     float vignette = smoothstep(1.3, 0.3, length(uv));
     col *= mix(0.6, 1.0, vignette);
+
+    vec3 warmTint = vec3(1.05, 1.0, 0.95);
+    vec3 coolTint = vec3(0.95, 1.0, 1.08);
+    vec3 tint = mix(warmTint, coolTint, modulation);
+    col *= tint;
+
+    col *= (1.0 + 0.2 * clamp(vertexEnergy, 0.0, 1.0));
 
     outColor = vec4(col, 1.0);
 }
