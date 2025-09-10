@@ -1701,6 +1701,12 @@ pub struct App {
     is_fullscreen: bool,
     current_shader_index: usize,
     shader_presets: Vec<ShaderPreset>,
+    // FPS tracking fields
+    frame_times: VecDeque<Instant>,
+    last_fps_log: Instant,
+    frame_count: u64,
+    // FPS tracking fields
+    frame_count_since_log: u32,
 }
 
 impl App {
@@ -1716,6 +1722,8 @@ impl App {
             .position(|p| *p == config.shader.preset)
             .unwrap_or(0);
 
+        let now = Instant::now();
+
         Self {
             window: None,
             gfx: None,
@@ -1727,6 +1735,32 @@ impl App {
             current_shader_index,
             shader_presets,
             config,
+
+            // Initialize FPS tracking
+            frame_times: VecDeque::with_capacity(1000), // Store up to 1000 recent frame times
+            last_fps_log: now,
+            frame_count: 0,
+            // FPS tracking fields
+            frame_count_since_log: 0,
+        }
+    }
+
+    #[inline]
+    fn update_fps_tracking(&mut self) {
+        self.frame_count_since_log += 1;
+
+        // Check if 10 seconds have passed (only do this check, no Duration creation)
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_fps_log);
+
+        if elapsed.as_secs() >= 10 {
+            let fps = self.frame_count_since_log as f64 / elapsed.as_secs_f64();
+
+            println!("Average FPS: {:.1} ({} frames in {:.1}s)",
+                     fps, self.frame_count_since_log, elapsed.as_secs_f64());
+
+            self.last_fps_log = now;
+            self.frame_count_since_log = 0;
         }
     }
 
@@ -1912,6 +1946,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                self.update_fps_tracking();
                 if let (Some(start_time), Some(window)) = (&self.start_time, &self.window) {
                     let elapsed = start_time.elapsed().as_secs_f32();
                     let size = window.inner_size();
