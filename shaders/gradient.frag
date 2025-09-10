@@ -1,6 +1,6 @@
 #version 450
 
-// ---------- Push constants & varyings (match your scaffold) ----------
+// Push constants matching your application
 layout(push_constant) uniform PushConstants {
     float time;
     uint  mouse_x;
@@ -8,10 +8,12 @@ layout(push_constant) uniform PushConstants {
     uint  mouse_pressed;
     float note_velocity;
     float pitch_bend;
-    float cc1;    // mid band / mod wheel
-    float cc74;   // high band / cutoff
+    float cc1;    // mid frequencies / mod wheel
+    float cc74;   // high frequencies / cutoff
     uint  note_count;
     uint  last_note;
+    float osc_ch1;
+    float osc_ch2;
     uint  render_w;
     uint  render_h;
 } pc;
@@ -22,233 +24,193 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// ---------- Constants & helpers ----------
-const float PI = 3.14159265359;
+#define PI 3.14159265359
 
-// tiny hash/noise helpers (deterministic, fast)
-float hash11(float n){ return fract(sin(n)*43758.5453123); }
-float hash21(vec2 p){ return fract(sin(dot(p, vec2(41.0, 289.0))) * 12543.90321); }
-float n1(float x){ float i=floor(x), f=fract(x); float a=hash11(i), b=hash11(i+1.0); return mix(a,b,smoothstep(0.0,1.0,f)); }
-float n2(vec2 p){
-    vec2 i=floor(p), f=fract(p);
-    float a=hash21(i);
-    float b=hash21(i+vec2(1,0));
-    float c=hash21(i+vec2(0,1));
-    float d=hash21(i+vec2(1,1));
-    vec2 u = f*f*(3.0-2.0*f);
-    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+// --------------------------------------------------------
+// Simplex(ish) Noise
+// --------------------------------------------------------
+
+vec3 hash33(vec3 p) {
+    float n = sin(dot(p, vec3(7, 157, 113)));
+    return fract(vec3(2097152, 262144, 32768)*n)*2. - 1.;
 }
 
-void pR(inout vec2 p, float a) {
-    p = cos(a)*p + sin(a)*vec2(p.y, -p.x);
+float tetraNoise(in vec3 p) {
+    vec3 i = floor(p + dot(p, vec3(0.333333)));
+    p -= i - dot(i, vec3(0.166666));
+    vec3 i1 = step(p.yzx, p), i2 = max(i1, 1.0-i1.zxy);
+    i1 = min(i1, 1.0-i1.zxy);
+    vec3 p1 = p - i1 + 0.166666, p2 = p - i2 + 0.333333, p3 = p - 0.5;
+    vec4 v = max(0.5 - vec4(dot(p,p), dot(p1,p1), dot(p2,p2), dot(p3,p3)), 0.0);
+    vec4 d = vec4(dot(p, hash33(i)), dot(p1, hash33(i + i1)), dot(p2, hash33(i + i2)), dot(p3, hash33(i + 1.)));
+    return clamp(dot(d, v*v*v*8.)*1.732 + .5, 0., 1.);
 }
 
-float smax(float a, float b, float r) {
-    vec2 u = max(vec2(r + a, r + b), vec2(0.0));
-    return min(-r, max(a, b)) + length(u);
+// --------------------------------------------------------
+// Rectangle distance function
+// --------------------------------------------------------
+
+float sRect(vec2 p, vec2 size) {
+    vec2 d = abs(p) - size;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 
-// IQ palette (kept for internal weighting even though final is B/W)
-vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d){ return a + b*cos(6.28318*(c*t + d)); }
-vec3 spectrum(float n){ return pal(n, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.67)); }
+// --------------------------------------------------------
+// Smooth repeat functions
+// --------------------------------------------------------
 
-// ---------- Model space utilities ----------
-vec4 inverseStereographic(vec3 p, out float k) {
-    k = 2.0 / (1.0 + dot(p, p));
-    return vec4(k*p, k-1.0);
+vec2 smoothRepeatStart(float x, float size) {
+    return vec2(
+    mod(x - size / 2., size),
+    mod(x, size)
+    );
 }
 
-float fTorus(vec4 p4) {
-    float d1 = length(p4.xy) / length(p4.zw) - 1.0;
-    float d2 = length(p4.zw) / length(p4.xy) - 1.0;
-    float d  = (d1 < 0.0) ? -d1 : d2;
-    return d / PI;
-}
-
-float fixDistance(float d, float k) {
-    float sn = sign(d);
-    d = abs(d);
-    d = d / k * 1.82;
-    d += 1.0;
-    d = pow(d, 0.5);
-    d -= 1.0;
-    d *= 5.0/3.0;
-    return d * sn;
-}
-
-// We’ll set this each frame from pc.time
-float uTime;
-
-// Rotation helpers
-mat3 rotateY(float a){
-    float c=cos(a), s=sin(a);
-    return mat3( c,0.0, s,
-    0.0,1.0,0.0,
-    -s,0.0, c );
-}
-mat3 rotateX(float a){
-    float c=cos(a), s=sin(a);
-    return mat3( 1.0,0.0,0.0,
-    0.0, c,-s,
-    0.0, s, c );
-}
-
-// Distance field
-float map(vec3 p) {
-    float k;
-    vec4 p4 = inverseStereographic(p, k);
-
-    // original rotation but time-driven by uTime
-    pR(p4.zy, uTime * -PI / 2.0);
-    pR(p4.xw, uTime * -PI / 2.0);
-
-    // thick walled Clifford torus intersected with a sphere
-    float d = fTorus(p4);
-    d = abs(d) - 0.2;
-    d = fixDistance(d, k);
-    d = smax(d, length(p) - 1.85, 0.2);
-    return d;
-}
-
-// Camera
-mat3 calcLookAtMatrix(vec3 ro, vec3 ta, vec3 up) {
-    vec3 ww = normalize(ta - ro);
-    vec3 uu = normalize(cross(ww, up));
-    vec3 vv = cross(uu, ww);
-    return mat3(uu, vv, ww);
+float smoothRepeatEnd(float a, float b, float x, float size) {
+    return mix(a, b,
+    smoothstep(
+    0., 1.,
+    sin((x / size) * PI * 2. - PI * .5) * .5 + .5
+    )
+    );
 }
 
 void main() {
-    // --- Resolution & coordinates (prefer push constants if set)
+    // Get resolution
     vec2 iResolution = (pc.render_w > 0u && pc.render_h > 0u)
     ? vec2(pc.render_w, pc.render_h)
     : vec2(800.0, 600.0);
 
     vec2 fragCoord = fragUV * iResolution;
-    vec2 uv = fragCoord / iResolution;          // 0..1
-    vec2 centered = (fragCoord - 0.5 * iResolution) / iResolution.y; // aspect-corrected
 
-    // --- Musical hooks
-    float A = clamp(pc.note_velocity, 0.0, 1.0);
-    float M = clamp(pc.cc1, 0.0, 1.0);
-    float H = clamp(pc.cc74, 0.0, 1.0);
+    // Square uv centered and scaled to the screen height
+    vec2 uv = (-iResolution.xy + 2. * fragCoord.xy) / iResolution.y;
 
-    // gentle base speed, reacts to loudness & mids
-    float speed = mix(0.45, 0.85, 0.5*A + 0.5*M);
-    uTime = mod(pc.time * speed / 2.0, 1.0);
+    // Audio-reactive parameters
+    float energyLevel = clamp(pc.note_velocity, 0.0, 1.0);
+    float pitchFactor = clamp(pc.pitch_bend, -1.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
 
-    // ---------- GLITCH DOMAIN WARP (screen-space) ----------
-    // line tear amount (bigger with energy/highs)
-    float lineGlitchAmt = mix(0.2, 0.008, 0.4*A + 0.6*H);
-    // blocky jump probability (also reacts to mids)
-    float blockJitter = step(0.97 - 0.5*M, hash21(vec2(floor(pc.time*7.0), 19.3)));
+    // Zoom varies with energy level
+    float zoom = mix(2.0, 1.2, energyLevel);
+    uv /= zoom;
 
-    // per-scanline horizontal jitter
-    float y = uv.y * iResolution.y;
-    float lineNoise = (n1(pc.time*3.0 + y*0.031) - 0.5) * 2.0;
-    float tear = lineNoise * lineGlitchAmt;
+    // Audio-reactive time scaling
+    float timeScale = mix(0.5, 2.0, modulation);
+    float iTime = pc.time * timeScale;
 
-    // occasional chunky offset blocks
-    vec2 blockUV = floor(uv * vec2(24.0, 14.0)) / vec2(24.0, 14.0);
-    float blockHash = hash21(blockUV + floor(pc.time*2.0));
-    float blockKick = (blockHash > 0.85 ? 1.0 : 0.0) * blockJitter;
-    float blockShift = (hash21(blockUV+2.31) - 0.5) * 0.05 * blockKick;
+    // Repeat size varies with pitch bend
+    float repeatSize = mix(3.0, 6.0, abs(pitchFactor));
+    float x = uv.x - mod(iTime, repeatSize / 2.);
+    float y = uv.y;
 
-    // mild vertical jitter / rolling
-    float roll = (n1(pc.time*0.3) - 0.5) * 0.02 * (0.2 + 0.8*M);
+    vec2 ab; // two sample points on one axis
+    float noise;
+    float noiseA, noiseB;
 
-    // final warped coords for camera ray construction
-    vec2 p = centered;
-    p.x += tear + blockShift;
-    p.y += roll;
+    // Audio-reactive noise scaling
+    float noiseIntensity = mix(0.5, 2.0, energyLevel);
 
-    // ---------- Camera setup (mostly original) ----------
-    vec3 camPos = vec3(1.8, 5.5, -5.5) * 1.75;
-    vec3 camTar = vec3(0.0, 0.0, 0.0);
-    vec3 camUp  = vec3(-1.0, 0.0, -1.5);
-    mat3 camMat = calcLookAtMatrix(camPos, camTar, camUp);
+    // Blend noise at different frequencies, moving in different directions
+    ab = smoothRepeatStart(x, repeatSize);
+    noiseA = tetraNoise(16.+vec3(vec2(ab.x, uv.y) * 1.2, 0)) * 0.5 * noiseIntensity;
+    noiseB = tetraNoise(16.+vec3(vec2(ab.y, uv.y) * 1.2, 0)) * 0.5 * noiseIntensity;
+    noise = smoothRepeatEnd(noiseA, noiseB, x, repeatSize);
 
-    float focalLength = 5.0;
-    vec3 rayDirection = normalize(camMat * vec3(p, focalLength));
-    vec3 rayPosition  = camPos;
-    float rayLength   = 0.0;
+    ab = smoothRepeatStart(y, repeatSize / 2.);
+    noiseA = tetraNoise(vec3(vec2(uv.x, ab.x) * 0.5, 0)) * 2.0;
+    noiseB = tetraNoise(vec3(vec2(uv.x, ab.y) * 0.5, 0)) * 2.0;
+    noise *= smoothRepeatEnd(noiseA, noiseB, y, repeatSize / 2.);
 
-    float dist = 0.0;
-    vec3 color = vec3(0.0);
-    vec3 c;
+    // High frequency detail controlled by CC74
+    float detailScale = mix(0.05, 0.15, brightness);
+    ab = smoothRepeatStart(x, repeatSize);
+    noiseA = tetraNoise(9.+vec3(vec2(ab.x, uv.y) * detailScale, 0)) * 5.;
+    noiseB = tetraNoise(9.+vec3(vec2(ab.y, uv.y) * detailScale, 0)) * 5.;
+    noise *= smoothRepeatEnd(noiseA, noiseB, x, repeatSize);
 
-    // March params (kept)
-    const float ITER = 32.0;
-    const float FUDGE_FACTOR = 0.8;
-    const float INTERSECTION_PRECISION = 0.001;
-    const float MAX_DIST = 20.0;
+    noise *= 0.75;
 
-    // internal tint vector rotates with CCs/pitch (only used as luminance weight later)
-    vec3 rotatedVectorY = rotateY(pc.cc1 * 10.0) * vec3(0.6, 0.25, 0.7);
-    vec3 rotatedVector  = rotateY(pc.pitch_bend * 10.0) * rotatedVectorY;
+    // Gradient direction changes with OSC or mouse input
+    vec2 gradientDir = vec2(-0.66, 1.0) * 0.4;
 
-    for (float i = 0.0; i < ITER; i++) {
-        rayLength += max(INTERSECTION_PRECISION, abs(dist) * FUDGE_FACTOR);
-        rayPosition = camPos + rayDirection * rayLength;
-        dist = map(rayPosition);
-
-        float proximity = max(0.0, 0.01 - abs(dist)) * 0.5;
-        c  = vec3(proximity);
-        c *= mix(vec3(1.4, 2.1, 1.7), vec3(1.2, 2.2, 1.8), H);
-
-        c += rotatedVector * FUDGE_FACTOR / 160.0;
-        c *= smoothstep(20.0, 7.0, length(rayPosition));
-
-        float rl = smoothstep(MAX_DIST, 0.1, rayLength);
-        c *= rl;
-
-        c *= spectrum(rl * 6.0 - 0.6);
-
-        color += c;
-
-        if (rayLength > MAX_DIST) break;
+    if (pc.osc_ch1 != 0.0 || pc.osc_ch2 != 0.0) {
+        // Use OSC input to control gradient direction
+        gradientDir.x += pc.osc_ch1 * 0.5;
+        gradientDir.y += pc.osc_ch2 * 0.5;
+    } else if (pc.mouse_pressed > 0u) {
+        // Use mouse input as fallback
+        vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
+        mouseNorm = (mouseNorm - 0.5) * 2.0;
+        gradientDir += mouseNorm * 0.3;
     }
 
-    // Tonemapping & gamma (as original-ish)
-    color = pow(color, vec3(1.0 / 1.8)) * 2.0;
-    color = pow(color, vec3(2.0)) * 3.0;
-    color = pow(color, vec3(1.0 / 2.2));
+    // Blend with gradient orientation
+    noise = mix(noise, dot(uv, gradientDir), 0.6);
 
-    // Optional: add tiny energy lift from vertexEnergy
-    color *= (1.0 + 0.15 * clamp(vertexEnergy, 0.0, 1.0));
+    // Audio-reactive line spacing
+    float spacing = mix(1./30., 1./80., brightness);
+    float lines = mod(noise, spacing) / spacing;
 
-    // ---------- BLACK & WHITE CONVERSION ----------
-    float g = dot(color, vec3(0.2126, 0.7152, 0.0722)); // luminance
+    // Convert sawtooth to triangle wave
+    lines = min(lines * 2., 1.) - max(lines * 2. - 1., 0.);
 
-    // ---------- POST FX: glitchy B/W treatment ----------
-    // film grain (audio-reactive)
-    float grain = n2(uv * iResolution.xy + vec2(pc.time*120.0, -pc.time*77.0)) - 0.5;
-    g += grain * mix(0.02, 0.12, 0.4*A + 0.6*H);
+    lines /= fwidth(noise / spacing);
+    lines /= 2.;
 
-    // scanlines & vertical subline flicker
-    float scan = 0.8 + 0.2 * sin( (uv.y*iResolution.y) * 3.14159 + pc.time*6.0 );
-    float subScan = 1.0 + 0.06 * sin((uv.x*iResolution.x)*0.5 + pc.time*40.0);
-    g *= scan * subScan;
+    // Rectangle distance - size varies with note count and energy
+    vec2 rectSize = vec2(0.4, 0.25);
 
-    // posterize / bit-crush depending on energy
-    float levels = mix(32.0, 6.0, clamp(0.2 + 0.8*(0.5*A + 0.5*M), 0.0, 1.0));
-    g = floor(g * levels) / levels;
-
-    // white spark hits (salt noise)
-    float spark = step(0.996, hash21(uv * iResolution.xy + floor(pc.time*90.0)));
-    g = mix(g, 1.0, spark * mix(0.0, 0.5, H));
-
-    // vignetting for contrast
-    float vign = smoothstep(1.25, 0.25, length(centered + vec2(tear, roll)*0.5));
-    g *= vign;
-
-    // occasional hard tear (brief horizontal clamp band)
-    float tearGate = 0.5 * step(0.985, hash11(floor(pc.time*5.0)+3.7));
-    if(tearGate > 0.5){
-        float bandY = fract(pc.time*0.7) * 0.8 + 0.1;
-        float band = smoothstep(bandY-0.01, bandY, uv.y) * (1.0 - smoothstep(bandY, bandY+0.01, uv.y));
-        g = mix(g, g*0.35, band);
+    // Scale rectangle with note count
+    if (pc.note_count > 0u) {
+        float noteScale = 1.0 + float(pc.note_count) * 0.05;
+        rectSize *= noteScale;
     }
 
-    outColor = vec4(vec3(g), 1.0);
+    // Deform rectangle with pitch bend
+    rectSize.x *= (1.0 + pitchFactor * 0.3);
+    rectSize.y *= (1.0 - pitchFactor * 0.2);
+
+    // Position offset with modulation
+    vec2 rectPos = uv + vec2(0.0, modulation * 0.1);
+
+    float d = sRect(rectPos, rectSize);
+
+    // Create fuzzy border - sharpness varies with energy
+    float borderSharpness = mix(0.02, 0.08, energyLevel);
+    float weight = smoothstep(0.0, borderSharpness, d);
+
+    // Audio-reactive line weight
+    float innerWeight = mix(3.0, 6.0, energyLevel);
+    float outerWeight = mix(0.8, 1.5, brightness);
+    weight = mix(innerWeight, outerWeight, weight);
+
+    // Scale weight with resolution
+    weight *= iResolution.y / 287.;
+
+    // Offset the line by the weight
+    lines -= weight - 1.;
+
+    // Invert for high energy sections
+    if (energyLevel > 0.8) {
+        lines = 1. - lines;
+    }
+
+    // Add some color tinting based on audio
+    vec3 color = vec3(lines);
+
+    // Subtle color shifts
+    if (modulation > 0.1) {
+        color.r *= (1.0 + modulation * 0.2);
+        color.b *= (1.0 + brightness * 0.15);
+    }
+
+    // Contrast boost for high frequencies
+    color = mix(color, color * color, brightness * 0.3);
+
+    // Add vertex energy contribution
+    color *= (1.0 + 0.1 * clamp(vertexEnergy, 0.0, 1.0));
+
+    outColor = vec4(color, 1.0);
 }
