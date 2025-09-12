@@ -1,4 +1,5 @@
 use crate::input::midi::MidiConfig;
+use crate::input::midi::MidiState;
 use crate::input::osc::OscConfig;
 use crate::input::osc::OscManager;
 use crate::input::osc::OscState;
@@ -310,27 +311,6 @@ impl ShaderSources {
 }
 
 // ==================== Optimized State Management ====================
-
-#[derive(Clone, Debug)]
-pub struct MidiState {
-    pub notes: [f32; MAX_NOTES],
-    pub controllers: [f32; MAX_CONTROLLERS],
-    pub pitch_bend: f32,
-    pub last_note: u8,
-    pub note_count: u32,
-}
-
-impl Default for MidiState {
-    fn default() -> Self {
-        Self {
-            notes: [0.0; MAX_NOTES],
-            controllers: [0.5; MAX_CONTROLLERS],
-            pitch_bend: 0.0,
-            last_note: 60,
-            note_count: 0,
-        }
-    }
-}
 
 // PERFORMANCE OPTIMIZATION #2: Frame state snapshot to reduce mutex lock frequency
 #[derive(Clone, Debug)]
