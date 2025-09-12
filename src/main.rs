@@ -194,6 +194,9 @@ impl Default for ShaderConfig {
     }
 }
 
+//https://claude.ai/chat/bdaf1a18-59e6-4947-82a5-6823fab5148a
+//https://chatgpt.com/c/68c453c9-dfc4-8331-a0e2-3b478d98927f
+
 impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
