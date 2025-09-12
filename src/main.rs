@@ -139,6 +139,7 @@ pub enum ShaderPreset {
     Terrain,
     Crystal,
     Custom,
+    Stars,
 }
 
 // Default value functions
@@ -228,6 +229,7 @@ impl Config {
             "terrain" => ShaderPreset::Terrain,
             "crystal" => ShaderPreset::Crystal,
             "custom" => ShaderPreset::Custom,
+            "stars" => ShaderPreset::Stars,
             _ => {
                 eprintln!("Unknown shader preset '{}', using default", shader_str);
                 ShaderPreset::Torus
@@ -256,6 +258,7 @@ impl ShaderSources {
                 ShaderPreset::Torus   => ("fullscreen.vert", "gradient.frag"),
                 ShaderPreset::Terrain => ("terrain.vert",   "terrain.frag"),
                 ShaderPreset::Crystal => ("crystal.vert",   "crystal.frag"),
+                ShaderPreset::Stars => ("stars.vert",   "stars.frag"),
                 ShaderPreset::Custom  => return Err(anyhow!("Custom shader requires paths")),
             };
             let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
@@ -278,6 +281,10 @@ impl ShaderSources {
             ShaderPreset::Crystal => Ok(Self {
                 vertex: include_str!("../shaders/crystal.vert").to_string(),
                 fragment: include_str!("../shaders/crystal.frag").to_string(),
+            }),
+            ShaderPreset::Stars => Ok(Self {
+                vertex: include_str!("../shaders/stars.vert").to_string(),
+                fragment: include_str!("../shaders/stars.frag").to_string(),
             }),
             ShaderPreset::Custom => Err(anyhow!("Custom shader requires paths")),
         }

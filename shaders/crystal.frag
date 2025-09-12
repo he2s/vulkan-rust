@@ -39,8 +39,8 @@ void main() {
     float brightness = clamp(pc.cc74, 0.0, 1.0);
     float bend = clamp(pc.pitch_bend, -1.0, 1.0);
 
-    // Time with audio modulation
-    float timeScale = mix(0.7, 1.3, modulation);
+    // Time with audio modulation - faster base rate for more dynamism
+    float timeScale = mix(0.5, 2.0, modulation);
     float iTime = pc.time * timeScale;
 
     // Mouse/OSC interactivity
@@ -48,86 +48,182 @@ void main() {
     vec2 interactiveOffset = vec2(0.0);
 
     if (pc.mouse_pressed > 0u) {
-        interactiveOffset = (mouseNorm - 0.5) * 0.1;
+        interactiveOffset = (mouseNorm - 0.5) * 0.15;
     } else if (abs(pc.osc_ch1) + abs(pc.osc_ch2) > 0.01) {
-        interactiveOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 0.05;
+        interactiveOffset = vec2(pc.osc_ch1, -pc.osc_ch2) * 0.1;
     }
 
-    // Apply interactive offset before normalization
+    // Apply interactive offset
     u += interactiveOffset * iResolution.y;
 
-    // === Port of the compact shader ===
+    // === Modified shader with new patterns ===
     vec2 v = iResolution.xy;
-    u = 0.2 * (u + u - v) / v.y;
+    vec2 originalU = 0.2 * (u + u - v) / v.y;
+    u = originalU;
 
-    // Scale UV based on energy for zoom effect
-    u *= mix(1.0, 0.85, energy * 0.5);
+    // Stronger zoom with energy
+    u *= mix(1.0, 0.6, energy * 0.7);
 
-    // Apply pitch bend as rotation
+    // Pitch bend creates spiral distortion
     if (abs(bend) > 0.01) {
-        float angle = bend * 0.5;
-        float c = cos(angle);
-        float s = sin(angle);
-        u = mat2(c, -s, s, c) * u;
+        float spiral = bend * 2.0 + energy * 0.5;
+        float dist = length(u);
+        float angle = atan(u.y, u.x) + spiral * dist;
+        u = vec2(cos(angle), sin(angle)) * dist;
     }
 
-    vec4 z = vec4(1, 2, 3, 0);
+    // Initialize with different values for variation
+    vec4 z = vec4(0.8, 1.5, 2.2, 0);
     vec4 o = z;
 
-    // Main iteration loop with audio modulation
+    // Main iteration loop with enhanced audio modulation
     float a = 0.5;
     float t = iTime;
 
-    // Adjust iteration count based on energy (19 base, up to 21 with high energy)
-    int maxIters = 19 + int(energy * 2.0);
+    // More aggressive iteration scaling
+    int maxIters = 17 + int(energy * 5.0); // 17-22 iterations
 
     for (int iter = 1; iter < maxIters; iter++) {
         float i = float(iter);
 
-        // Core calculation from original
-        o += (1.0 + cos(z + t))
-        / length((1.0 + i * dot(v, v))
-        * sin(1.5 * u / (0.5 - dot(u, u)) - 9.0 * u.yx + t));
+        // Modified core with extra harmonics
+        vec4 colorMod = 1.0 + cos(z * 1.5 + t * 1.2);
+        float divisor = length((1.0 + i * dot(v, v))
+        * sin(2.0 * u / (0.5 - dot(u, u)) - 11.0 * u.yx + t * 1.3));
 
-        // Update v with modulation influence
+        // Add some discontinuity for sharper edges
+        divisor = max(divisor, 0.001);
+        o += colorMod / divisor;
+
+        // More chaotic v evolution
         t += 1.0;
-        a += 0.03 * mix(1.0, 1.2, modulation);
-        v = cos(t - 7.0 * u * pow(a, i)) - 5.0 * u;
+        a += 0.025 * mix(1.0, 1.8, modulation);
+        float chaos = mix(7.0, 12.0, brightness);
+        v = cos(t - chaos * u * pow(a, i * 0.9)) - 6.0 * u;
 
-        // Transform u with rotation matrix
-        vec4 angles = vec4(0, 11, 33, 0);
-        float timemod = 0.02 * t * mix(1.0, 1.5, brightness);
-        mat2 rot = mat2(cos(i + timemod - angles));
+        // Enhanced rotation matrix with phase shifts
+        vec4 angles = vec4(0, 13, 37, 0); // Different angles for variation
+        float timemod = 0.025 * t * mix(1.0, 2.0, brightness);
+        mat2 rot = mat2(cos(i * 1.1 + timemod - angles));
         u *= rot;
 
-        // Complex feedback with audio reactivity
-        float feedback = 40.0 * mix(1.0, 1.5, energy);
-        u += tanh(feedback * dot(u, u) * cos(100.0 * u.yx + t)) / 200.0
-        + 0.2 * a * u
-        + cos(4.0 / exp(dot(o, o) / 100.0) + t) / 300.0;
+        // More aggressive feedback with extra nonlinearity
+        float feedback = mix(30.0, 60.0, energy);
+        vec2 feedbackU = u;
+
+        // Add wave distortion
+        feedbackU += 0.1 * sin(5.0 * u.yx + t * 2.0) * modulation;
+
+        u += tanh(feedback * dot(feedbackU, feedbackU) * cos(150.0 * feedbackU.yx + t * 1.5)) / 250.0
+        + 0.18 * a * u
+        + cos(5.0 / exp(dot(o, o) / 120.0) + t * 1.2) / 400.0;
     }
 
-    // Final color calculation
-    o = 25.6 / (min(o, 13.0) + 164.0 / o) - dot(u, u) / 250.0;
+    // Different final transformation for sharper contrast
+    o = 30.0 / (min(o, 15.0) + 180.0 / o) - dot(u, u) / 200.0;
 
-    // Enhance with vertex energy
-    o *= (1.0 + vertexEnergy * 0.3);
+    // Enhance with vertex energy more dramatically
+    o *= (1.0 + vertexEnergy * 0.8);
 
-    // Apply brightness control
-    o = mix(o, o * 1.5, brightness * 0.7);
+    // === COLOR MODES ===
+    vec3 color;
 
-    // Color grading based on note count
-    if (pc.note_count > 0u) {
-        float noteInfluence = float(pc.note_count) / 10.0;
-        o.rgb = mix(o.rgb, o.gbr, clamp(noteInfluence, 0.0, 0.3));
+    // Mode selection based on note count and OSC
+    float modeSelect = float(pc.note_count % 3u) + abs(pc.osc_ch1);
+
+    if (modeSelect < 1.0) {
+        // MODE 1: PURE GREYSCALE with high contrast
+        float grey = dot(o.rgb, vec3(0.299, 0.587, 0.114));
+
+        // Apply contrast curve
+        grey = pow(abs(grey), 0.7) * sign(grey);
+
+        // Add energy-based pulsing
+        grey *= 1.0 + energy * 0.5 * sin(iTime * 10.0);
+
+        // Sharp threshold for binary effect at high brightness
+        if (brightness > 0.7) {
+            grey = smoothstep(0.3, 0.7, abs(grey)) * sign(grey);
+        }
+
+        color = vec3(grey);
+
+    } else if (modeSelect < 2.0) {
+        // MODE 2: NEON COLORS - ultra vibrant
+        vec3 neon = o.rgb;
+
+        // Rotate through neon palette
+        float hueShift = iTime * 0.25 + bend * 0.20;
+        neon = vec3(
+        sin(neon.r * 3.0 + hueShift) * 0.5 + 0.5,
+        sin(neon.g * 3.0 + hueShift + 0.094) * 0.5 + 0.5,
+        sin(neon.b * 3.0 + hueShift + 0.189) * 0.5 + 0.5
+        );
+
+        // Extreme saturation boost
+        float lum = dot(neon, vec3(0.333));
+        neon = mix(vec3(lum), neon, 0.5 + modulation * 2.5);
+
+        // Neon glow effect
+        float glow = pow(max(max(neon.r, neon.g), neon.b), 2.0);
+        neon += glow * vec3(0.3, 0.1, 0.5) * brightness;
+
+        // Hard clip for electric feel
+        neon = clamp(neon, 0.0, 1.0);
+        neon = pow(neon, vec3(0.6)); // Brighten
+
+        color = neon;
+
+    } else {
+        // MODE 3: NEON EDGES ON GREYSCALE
+        float grey = dot(abs(o.rgb), vec3(0.299, 0.587, 0.114));
+
+        // Edge detection via derivatives
+        vec2 dU = originalU - u;
+        float edge = length(dU) * 50.0;
+        edge = pow(edge, 0.7);
+
+        // Base greyscale
+        color = vec3(grey * 0.3);
+
+        // Add neon edges
+        vec3 edgeColor;
+        if (energy > 0.5) {
+            // Hot neon: magenta to cyan
+            edgeColor = mix(
+            vec3(0.0, 0.0, 0.8),
+            vec3(0.0, 1.0, 0.2),
+            sin(iTime * 1.0 + edge) * 0.5 + 0.5
+            );
+        } else {
+            // Cool neon: blue to green
+            edgeColor = mix(
+            vec3(2.0, 0.3, 1.0),
+            vec3(0.0, 1.0, 0.3),
+            sin(iTime * 2.0 - edge) * 0.5 + 0.5
+            );
+        }
+
+        // Composite edges over grey
+        color += edgeColor * edge * brightness * 2.0;
+
+        // Add scanline effect for cyberpunk feel
+        float scanline = sin(fragUV.y * iResolution.y * 2.0 + iTime * 5.0) * 0.04;
+        color *= 1.0 + scanline;
     }
 
-    // Saturation boost with CC1
-    vec3 color = o.rgb;
-    float lum = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(vec3(lum), color, 1.0 + modulation * 0.5);
+    // Final brightness adjustment
+    color *= mix(0.8, 1.5, brightness);
 
-    // Final output with gamma correction
-    color = pow(max(color, 0.0), vec3(2.75));
+    // Optional: Add chromatic aberration for neon modes
+    if (modeSelect >= 1.0 && modulation > 0.5) {
+        float aberration = 0.002 * modulation;
+        color.r *= 1.0 + aberration;
+        color.b *= 1.0 - aberration;
+    }
+
+    // Sharp gamma for punchy contrast
+    color = pow(max(color, 0.0), vec3(2.55));
+
     outColor = vec4(color, 1.0);
 }
