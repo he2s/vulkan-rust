@@ -24,93 +24,110 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-const float TAU = 6.283185307179586;
-
-// iquilez palette
-vec3 palette(float t) {
-    vec3 a = vec3(0.5);
-    vec3 b = vec3(0.5);
-    vec3 c = vec3(1.0);
-    vec3 d = vec3(0.263, 0.416, 0.557);
-    return a + b * cos(TAU * (c * t + d));
-}
-
 void main() {
-    // Resolution fallback
+    // Resolution setup
     vec2 iResolution = (pc.render_w > 0u && pc.render_h > 0u)
     ? vec2(pc.render_w, pc.render_h)
     : vec2(800.0, 600.0);
 
-    // Shadertoy-style fragCoord and time
-    vec2 fragCoord = fragUV * iResolution;
+    // Convert UV to Shadertoy-style coordinates
+    vec2 u = fragUV * iResolution;
 
-    float energy     = clamp(pc.note_velocity, 0.0, 1.0);
-    float modulation = clamp(pc.cc1,          0.0, 1.0); // speed/warp
-    float brightness = clamp(pc.cc74,         0.0, 1.0); // glow/intensity
-    float bend       = clamp(pc.pitch_bend,  -1.0, 1.0);
+    // Audio-reactive parameters
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
+    float bend = clamp(pc.pitch_bend, -1.0, 1.0);
 
-    // Time: slightly audio-reactive
-    float timeScale = mix(0.6, 1.4, modulation);
+    // Time with audio modulation
+    float timeScale = mix(0.7, 1.3, modulation);
     float iTime = pc.time * timeScale;
 
-    // Base UV (preserve aspect like the original)
-    vec2 uv  = (fragCoord * 2.0 - iResolution.xy) / iResolution.y;
-    vec2 uv0 = uv;
+    // Mouse/OSC interactivity
+    vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
+    vec2 interactiveOffset = vec2(0.0);
 
-    // Optional interactive offset (mouse or OSC)
-    vec2 mouseNorm   = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
-    vec2 mouseOffset = (mouseNorm - 0.5) * 2.0 * 0.25; // gentle push
-    vec2 oscOffset   = vec2(pc.osc_ch1, pc.osc_ch2) * 0.25;
-
-    if (pc.mouse_pressed > 0u) uv += mouseOffset;
-    else if (abs(pc.osc_ch1) + abs(pc.osc_ch2) > 0.0) uv += oscOffset;
-
-    // Tile scale reacts a touch to energy and CC74 (cutoff/brightness)
-    float baseTile = 1.5;
-    float tileBoost = 1.0 + energy * 0.3 + brightness * 0.2;
-    float tile = baseTile * tileBoost;
-
-    // Iterations (keep the original 4 look; allow small lift with energy)
-    int iters = 4 + int(floor(energy * 1.0)); // 4..5
-
-    vec3 finalColor = vec3(0.0);
-
-    // Port of mainImage loop with minor safety tweaks & ints
-    for (int i = 0; i < iters; ++i) {
-        float fi = float(i);
-
-        // iq tile fold
-        uv = fract(uv * tile) - 0.5;
-
-        float lenUV  = length(uv);
-        float lenUV0 = length(uv0);
-
-        float d = lenUV * exp(-lenUV0);
-
-        // Original palette driving; add slight pitch-bend hue drift
-        float t = lenUV0 + fi * 0.4 + iTime * 0.4 + bend * 0.2;
-        vec3 col = palette(t);
-
-        // Distortion & shaping (preserved)
-        d = sin(d * 8.0 + iTime) * 0.125; // /8
-        d = abs(d);
-
-        // Power reacts to modulation; clamp to avoid extreme blowouts
-        float powK = mix(1.1, 1.35, modulation); // ~1.2 default feel
-        d = pow(max(0.0005, 0.01 / max(1e-5, d)), powK);
-
-        finalColor += col * d;
+    if (pc.mouse_pressed > 0u) {
+        interactiveOffset = (mouseNorm - 0.5) * 0.1;
+    } else if (abs(pc.osc_ch1) + abs(pc.osc_ch2) > 0.01) {
+        interactiveOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 0.05;
     }
 
-    // Vertex energy boosts brightness a bit
-    finalColor *= (1.0 + vertexEnergy * 0.5);
+    // Apply interactive offset before normalization
+    u += interactiveOffset * iResolution.y;
 
-    // CC74-driven glow & gentle clamp to 0..1
-    float glow = dot(finalColor, vec3(1.0 / 3.0));
-    finalColor += glow * brightness * 0.25;
+    // === Port of the compact shader ===
+    vec2 v = iResolution.xy;
+    u = 0.2 * (u + u - v) / v.y;
 
-    // Simple contrast curve
-    finalColor = pow(clamp(finalColor, 0.0, 1.0), vec3(2.9));
+    // Scale UV based on energy for zoom effect
+    u *= mix(1.0, 0.85, energy * 0.5);
 
-    outColor = vec4(finalColor, 1.0);
+    // Apply pitch bend as rotation
+    if (abs(bend) > 0.01) {
+        float angle = bend * 0.5;
+        float c = cos(angle);
+        float s = sin(angle);
+        u = mat2(c, -s, s, c) * u;
+    }
+
+    vec4 z = vec4(1, 2, 3, 0);
+    vec4 o = z;
+
+    // Main iteration loop with audio modulation
+    float a = 0.5;
+    float t = iTime;
+
+    // Adjust iteration count based on energy (19 base, up to 21 with high energy)
+    int maxIters = 19 + int(energy * 2.0);
+
+    for (int iter = 1; iter < maxIters; iter++) {
+        float i = float(iter);
+
+        // Core calculation from original
+        o += (1.0 + cos(z + t))
+        / length((1.0 + i * dot(v, v))
+        * sin(1.5 * u / (0.5 - dot(u, u)) - 9.0 * u.yx + t));
+
+        // Update v with modulation influence
+        t += 1.0;
+        a += 0.03 * mix(1.0, 1.2, modulation);
+        v = cos(t - 7.0 * u * pow(a, i)) - 5.0 * u;
+
+        // Transform u with rotation matrix
+        vec4 angles = vec4(0, 11, 33, 0);
+        float timemod = 0.02 * t * mix(1.0, 1.5, brightness);
+        mat2 rot = mat2(cos(i + timemod - angles));
+        u *= rot;
+
+        // Complex feedback with audio reactivity
+        float feedback = 40.0 * mix(1.0, 1.5, energy);
+        u += tanh(feedback * dot(u, u) * cos(100.0 * u.yx + t)) / 200.0
+        + 0.2 * a * u
+        + cos(4.0 / exp(dot(o, o) / 100.0) + t) / 300.0;
+    }
+
+    // Final color calculation
+    o = 25.6 / (min(o, 13.0) + 164.0 / o) - dot(u, u) / 250.0;
+
+    // Enhance with vertex energy
+    o *= (1.0 + vertexEnergy * 0.3);
+
+    // Apply brightness control
+    o = mix(o, o * 1.5, brightness * 0.7);
+
+    // Color grading based on note count
+    if (pc.note_count > 0u) {
+        float noteInfluence = float(pc.note_count) / 10.0;
+        o.rgb = mix(o.rgb, o.gbr, clamp(noteInfluence, 0.0, 0.3));
+    }
+
+    // Saturation boost with CC1
+    vec3 color = o.rgb;
+    float lum = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(vec3(lum), color, 1.0 + modulation * 0.5);
+
+    // Final output with gamma correction
+    color = pow(max(color, 0.0), vec3(2.75));
+    outColor = vec4(color, 1.0);
 }
