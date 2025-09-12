@@ -1,6 +1,5 @@
 #version 450
 
-// Push constants matching your Rust PushConstants struct
 layout(push_constant) uniform PushConstants {
     float time;
     uint mouse_x;
@@ -18,29 +17,46 @@ layout(push_constant) uniform PushConstants {
     uint render_h;
 } pc;
 
-// Output to fragment shader
 layout(location = 0) out vec2 fragCoord;
-layout(location = 1) out float pattern_intensity;
+layout(location = 1) out float dimension;
 layout(location = 2) out vec2 uv;
 
-// Constants for the generative pattern
 const float PI = 3.14159265359;
-const float TAU = 6.28318530718;
+const float PHI = 1.618033988749;
 
-// Hash function for pseudo-random values
-float hash(float n) {
-    return fract(sin(n) * 43758.5453123);
+// 4D rotation matrix projection to 2D
+vec2 rotate4D(vec2 p, float t) {
+    // Simulate 4D rotation projected down to 2D
+    float a = t * 0.7;
+    float b = t * 1.3;
+    float c = t * 0.9;
+
+    // Clifford attractor-inspired transformation
+    float x_new = sin(a * p.y) + c * cos(a * p.x);
+    float y_new = sin(b * p.x) + c * cos(b * p.y);
+
+    return vec2(x_new, y_new) * 0.5;
 }
 
-// 2D rotation matrix
-mat2 rot2D(float angle) {
-    float s = sin(angle);
-    float c = cos(angle);
-    return mat2(c, -s, s, c);
+// Fractal kaleidoscope symmetry
+vec2 kaleidoscope(vec2 p, int symmetry) {
+    float angle = atan(p.y, p.x);
+    float radius = length(p);
+
+    // Create kaleidoscope symmetry
+    float segment = PI * 2.0 / float(symmetry);
+    angle = mod(angle, segment);
+    if (angle > segment * 0.5) {
+        angle = segment - angle;
+    }
+
+    // Apply fractal scaling
+    radius = pow(radius, 1.0 + sin(pc.time * 0.01) * 0.3);
+
+    return vec2(cos(angle), sin(angle)) * radius;
 }
 
 void main() {
-    // Generate vertex ID-based coordinates for fullscreen triangle
     vec2 vertices[3] = vec2[3](
     vec2(-1.0, -1.0),
     vec2( 3.0, -1.0),
@@ -48,98 +64,116 @@ void main() {
     );
 
     vec2 base_pos = vertices[gl_VertexIndex];
-
-    // Calculate UV coordinates
     uv = base_pos * 0.5 + 0.5;
 
-    // Mouse influence (normalized)
+    // HYPERDIMENSIONAL PROJECTION
+    vec2 hyper_pos = base_pos;
+
+    // Iterate through multiple dimensional projections
+    for (int dim = 0; dim < 4; dim++) {
+        float phase = float(dim) * PHI + pc.time * 0.01 * (0.3 + float(dim) * 0.1);
+        hyper_pos = rotate4D(hyper_pos, phase);
+
+        // MIDI modulates dimensional depth
+        float depth = pc.note_velocity * float(dim) * 0.1;
+        hyper_pos *= 1.0 + depth;
+    }
+
+    // KALEIDOSCOPE MIRRORS
+    int symmetry = 3 + int(pc.cc1 * 13.0); // 3 to 16 fold symmetry
+    vec2 kaleid_pos = kaleidoscope(base_pos, symmetry);
+
+    // STRANGE ATTRACTOR INFLUENCE
+    vec2 attractor = vec2(0.0);
+    vec2 p = base_pos;
+    for (int i = 0; i < 5; i++) {
+        // Hénon map variation
+        float x_new = 1.0 - 1.4 * p.x * p.x + p.y;
+        float y_new = 0.3 * p.x;
+        p = vec2(x_new, y_new) * 0.5;
+        attractor += p * pow(0.5, float(i));
+    }
+    attractor *= pc.cc74 * 0.3;
+
+    // TESSELLATION WARPING
+    vec2 tessellation = vec2(0.0);
+    float hex_x = base_pos.x * 3.464; // sqrt(3) * 2
+    float hex_y = base_pos.y * 3.0;
+
+    // Hexagonal grid coordinates
+    float hx = floor(hex_x);
+    float hy = floor(hex_y / 1.5);
+
+    // Warp based on MIDI notes
+    float note_warp = float(pc.last_note) / 127.0;
+    tessellation = vec2(
+    sin(hx * PHI + pc.time + note_warp * PI),
+    cos(hy * PHI - pc.time + note_warp * PI)
+    ) * 0.1 * pc.osc_ch1;
+
+    // IMPOSSIBLE GEOMETRY: Penrose tiling influence
+    float penrose_angle = atan(base_pos.y, base_pos.x);
+    float penrose_r = length(base_pos);
+
+    // Five-fold symmetry with golden ratio scaling
+    for (int i = 0; i < 5; i++) {
+        float angle = penrose_angle + float(i) * PI * 2.0 / 5.0;
+        vec2 star_point = vec2(cos(angle), sin(angle)) * penrose_r;
+
+        // Golden ratio spiral
+        star_point *= pow(PHI, float(i) * 0.2 - pc.time * 0.1);
+        tessellation += star_point * 0.05 * pc.osc_ch2;
+    }
+
+    // VERTEX ID MAGIC: Each vertex follows different dimensional rules
+    float vertex_magic = float(gl_VertexIndex);
+    vec2 magic_offset = vec2(
+    sin(vertex_magic * PHI * 10.0 + pc.time * 2.0),
+    cos(vertex_magic * PI * 7.0 - pc.time * 1.5)
+    );
+
+    // Make it respond to number of notes playing
+    magic_offset *= float(pc.note_count) * 0.02;
+
+    // MOUSE CREATES DIMENSIONAL RIFTS
     vec2 mouse = vec2(float(pc.mouse_x), float(pc.mouse_y)) / vec2(float(pc.render_w), float(pc.render_h));
-    mouse = mouse * 2.0 - 1.0; // Convert to [-1, 1] range
+    mouse = mouse * 2.0 - 1.0;
 
-    // Time-based animation
-    float t = pc.time * 0.5;
-    float pulse = sin(t * 2.0) * 0.5 + 0.5;
-
-    // MIDI-reactive parameters
-    float midi_energy = pc.note_velocity * 2.0 + pc.cc1;
-    float midi_morph = pc.pitch_bend * 0.5 + 0.5;
-    float osc_influence = (pc.osc_ch1 + pc.osc_ch2) * 0.5;
-
-    // Create multiple layers of movement
-    vec2 displacement = vec2(0.0);
-
-    // Layer 1: Circular waves emanating from center
-    float dist_from_center = length(base_pos);
-    float wave1 = sin(dist_from_center * 10.0 - t * 3.0 + midi_energy * PI);
-    displacement += normalize(base_pos) * wave1 * 0.1 * pc.note_velocity;
-
-    // Layer 2: Spiral distortion
-    float angle = atan(base_pos.y, base_pos.x);
-    float spiral = sin(angle * 5.0 + dist_from_center * 8.0 - t * 2.0);
-    vec2 spiral_disp = vec2(cos(angle + spiral), sin(angle + spiral)) * 0.05;
-    displacement += spiral_disp * (0.5 + midi_morph);
-
-    // Layer 3: Grid distortion based on vertex ID
-    float grid_x = sin(float(gl_VertexIndex) * 1.618 + t) * 0.1;
-    float grid_y = cos(float(gl_VertexIndex) * 2.718 - t * 1.3) * 0.1;
-    displacement += vec2(grid_x, grid_y) * pc.cc74;
-
-    // Layer 4: Mouse interaction - attract/repel vertices
+    vec2 rift = vec2(0.0);
     if (pc.mouse_pressed > 0) {
         vec2 to_mouse = mouse - base_pos;
-        float mouse_dist = length(to_mouse);
-        float mouse_influence = exp(-mouse_dist * 2.0) * 0.3;
-        displacement += normalize(to_mouse) * mouse_influence * sin(t * 10.0);
+        float rift_dist = length(to_mouse);
+
+        // Create swirling dimensional rift
+        float rift_angle = atan(to_mouse.y, to_mouse.x);
+        float rift_swirl = rift_angle + 1.0 / (rift_dist + 0.1) * 2.0;
+
+        rift = vec2(cos(rift_swirl), sin(rift_swirl)) * exp(-rift_dist) * 0.5;
     }
 
-    // Layer 5: Audio reactive breathing
-    float breathing = sin(t + pc.cc1 * TAU) * 0.05;
-    displacement += base_pos * breathing * (1.0 + osc_influence);
+    // COMBINE ALL TRANSFORMATIONS
+    vec2 total_displacement = hyper_pos - base_pos +
+    (kaleid_pos - base_pos) * 0.3 +
+    attractor +
+    tessellation +
+    magic_offset +
+    rift;
 
-    // Layer 6: Fractal-like recursive displacement
-    for (int i = 0; i < 3; i++) {
-        float scale = pow(2.0, float(i));
-        vec2 offset = vec2(
-        sin(t * scale + float(i) * 1.234),
-        cos(t * scale * 0.7 + float(i) * 2.345)
-        ) * 0.02 / scale;
-        displacement += offset * midi_energy;
-    }
+    // Apply pitch bend as a reality-warping factor
+    total_displacement = mix(total_displacement,
+    total_displacement.yx * sign(pc.pitch_bend),
+    abs(pc.pitch_bend));
 
-    // Layer 7: Note-based geometric transforms
-    float note_norm = float(pc.last_note) / 127.0;
-    mat2 rotation = rot2D(note_norm * TAU + t * 0.5);
-    displacement = rotation * displacement;
+    // Calculate dimension value for fragment shader
+    dimension = length(hyper_pos) + length(attractor) * 2.0 + vertex_magic * 0.1;
+    dimension = fract(dimension + pc.time * 0.0005);
 
-    // Apply Perlin-noise-like distortion
-    float noise_scale = 5.0 + sin(t) * 2.0;
-    float noise_x = sin(base_pos.x * noise_scale + t) * cos(base_pos.y * noise_scale - t * 0.7);
-    float noise_y = cos(base_pos.x * noise_scale - t * 1.3) * sin(base_pos.y * noise_scale + t);
-    displacement += vec2(noise_x, noise_y) * 0.03 * (1.0 + pc.note_count * 0.1);
+    // Final position with creative clamping
+    vec2 final_pos = base_pos + total_displacement * 0.6;
 
-    // Final vertex position with bounded displacement
-    vec2 final_pos = base_pos + displacement * 0.5;
+    // Wrap-around instead of hard clamping for more interesting visuals
+    final_pos = fract(final_pos * 0.5 + 0.5) * 2.0 - 1.0;
 
-    // Ensure we still cover the full screen (clamp displacement magnitude)
-    float max_displacement = 0.3;
-    if (length(displacement) > max_displacement) {
-        displacement = normalize(displacement) * max_displacement;
-        final_pos = base_pos + displacement;
-    }
-
-    // Calculate pattern intensity for fragment shader
-    pattern_intensity = length(displacement) * 3.0;
-    pattern_intensity += wave1 * 0.5;
-    pattern_intensity += spiral * 0.3;
-    pattern_intensity = clamp(pattern_intensity, 0.0, 1.0);
-
-    // Mix with MIDI/audio values for more variation
-    pattern_intensity = mix(pattern_intensity, pc.note_velocity, 0.3);
-    pattern_intensity = mix(pattern_intensity, abs(pc.pitch_bend), 0.2);
-
-    // Output final vertex position
     gl_Position = vec4(final_pos, 0.0, 1.0);
-
-    // Pass through coordinates for fragment shader
     fragCoord = final_pos;
 }

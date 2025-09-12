@@ -1,6 +1,5 @@
 #version 450
 
-// Push constants (must match vertex shader)
 layout(push_constant) uniform PushConstants {
     float time;
     uint mouse_x;
@@ -18,54 +17,67 @@ layout(push_constant) uniform PushConstants {
     uint render_h;
 } pc;
 
-// Input from vertex shader
 layout(location = 0) in vec2 fragCoord;
-layout(location = 1) in float pattern_intensity;
+layout(location = 1) in float dimension;
 layout(location = 2) in vec2 uv;
 
-// Output
 layout(location = 0) out vec4 outColor;
 
-// Simple hash for dithering
-float hash21(vec2 p) {
-    p = fract(p * vec2(234.34, 435.345));
-    p += dot(p, p + 34.23);
-    return fract(p.x * p.y);
+const float PHI = 1.618033988749;
+
+float hyperdimensional_pattern(vec2 p, float d) {
+    float pattern = 0.0;
+
+    // Multiple dimensional slices interfering
+    for (int i = 0; i < 7; i++) {
+        float slice = float(i) * PHI;
+        vec2 offset = vec2(cos(slice), sin(slice)) * d;
+
+        // Each dimension has its own frequency
+        float freq = 10.0 + float(i) * PHI * 3.0;
+        float wave = sin(dot(p + offset, vec2(1.0, PHI)) * freq + pc.time * float(i + 1));
+
+        // Interference pattern
+        pattern += wave * pow(0.7, float(i));
+    }
+
+    // Quantize to create sharp edges
+    pattern = floor(pattern * 5.0 + 0.5) / 5.0;
+
+    return pattern;
 }
 
 void main() {
-    // Calculate distance from center
-    float dist = length(fragCoord);
+    // Base hyperdimensional pattern
+    float pattern = hyperdimensional_pattern(fragCoord, dimension);
 
-    // Create concentric circles modulated by vertex distortion
-    float circles = sin(dist * 20.0 - pc.time * 2.0 + pattern_intensity * 10.0);
-    circles = smoothstep(-0.1, 0.1, circles);
+    // Kaleidoscope mirrors create fractal boundaries
+    float mirror_edges = abs(sin(fragCoord.x * 20.0 * (1.0 + pc.cc1))) *
+    abs(cos(fragCoord.y * 20.0 * (1.0 + pc.cc74)));
+    mirror_edges = step(0.9, mirror_edges);
 
-    // Grid pattern
-    vec2 grid = sin(fragCoord * 15.0 + pattern_intensity * 5.0);
-    float grid_pattern = step(0.0, grid.x * grid.y);
+    // Penrose tiling influence
+    float penrose = sin(length(fragCoord) * PHI * 10.0 + dimension * 5.0);
+    penrose = step(0.0, penrose);
 
-    // Combine patterns
-    float pattern = mix(circles, grid_pattern, 0.5 + pc.cc1 * 0.5);
+    // Mix patterns based on MIDI
+    float final_pattern = pattern;
+    final_pattern = mix(final_pattern, penrose, pc.note_velocity * 0.5);
+    final_pattern = mix(final_pattern, mirror_edges, pc.osc_ch1);
 
-    // Modulate with vertex shader's pattern intensity
-    pattern *= (0.5 + pattern_intensity);
+    // Dimensional rifts (inverted zones)
+    float rift = step(0.8, sin(dimension * 50.0 + pc.time * 5.0));
+    final_pattern = mix(final_pattern, 1.0 - final_pattern, rift);
 
-    // Add some noise/dithering for organic feel
-    float noise = hash21(fragCoord * 100.0 + pc.time);
-    pattern += noise * 0.1;
+    // Sharp black and white with dimension-based threshold
+    float threshold = 0.5 + pc.pitch_bend * 0.3 + sin(dimension * 10.0) * 0.2;
+    float bw = step(threshold, final_pattern);
 
-    // MIDI reactive threshold
-    float threshold = 0.5 + pc.note_velocity * 0.3 - pc.pitch_bend * 0.2;
-
-    // Sharp black and white with smooth edges
-    float bw = smoothstep(threshold - 0.02, threshold + 0.02, pattern);
-
-    // Invert based on mouse press or high MIDI activity
-    if (pc.mouse_pressed > 0 || pc.note_count > 3) {
-        bw = 1.0 - bw;
+    // Flash on note changes
+    if (pc.note_count > 0) {
+        float flash = sin(pc.time * 50.0) * 0.5 + 0.5;
+        bw = mix(bw, 1.0 - bw, flash * pc.note_velocity * 0.3);
     }
 
-    // Final color output
-    outColor = vec4(vec3(bw), 1.0);
+    outColor = vec4(1.0);
 }
