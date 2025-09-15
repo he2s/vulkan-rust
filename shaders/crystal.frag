@@ -155,7 +155,7 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
             col.xyz *= den * lightColor;
 
             // Energy adds glow
-            col.xyz += col.xyz * energy * 0.3;
+            col.xyz += col.xyz * energy * 0.75;
         }
 
         // Fog with modulation influence

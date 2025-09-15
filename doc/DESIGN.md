@@ -11,6 +11,7 @@ A repository of code and learning material related to Vulkan on Rust
 
   - image loading
   - multi shader fade
+  - list devies
 
 ### Performance
 
