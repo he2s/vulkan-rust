@@ -1,5 +1,4 @@
-use crate::input::midi::MidiConfig;
-use crate::input::midi::MidiState;
+use crate::input::midi::{MidiConfig, MidiState, MidiManager};
 use crate::input::osc::OscConfig;
 use crate::input::osc::OscManager;
 use crate::input::osc::OscState;
@@ -30,8 +29,10 @@ use serde::{Deserialize, Serialize};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rustfft::{FftPlanner, num_complex::Complex32, Fft};
 use std::arch::x86_64::*;
+use std::ffi::CStr;
 
 mod input;
+
 
 // Constants
 const DEFAULT_WIDTH: u32 = 800;
@@ -56,6 +57,9 @@ pub struct Args {
     /// Path to configuration file
     #[arg(short, long, default_value = "config.toml")]
     config: String,
+    /// List all available devices (MIDI, Audio, GPU) and exit
+    #[arg(long)]
+    list_devices: bool,
     /// Start in fullscreen mode
     #[arg(short, long)]
     fullscreen: bool,
@@ -241,6 +245,224 @@ impl Config {
         }
     }
 }
+
+pub struct DeviceLister;
+
+impl DeviceLister {
+    pub fn list_all_devices() {
+        println!("\n=== Available Devices ===\n");
+        Self::list_gpus();
+        Self::list_midi_devices();
+        Self::list_audio_devices();
+    }
+
+    fn list_gpus() {
+        println!("📊 Graphics Devices (GPUs):");
+        println!("----------------------------");
+
+        match Self::enumerate_gpus() {
+            Ok(gpus) => {
+                if gpus.is_empty() {
+                    println!("  No Vulkan-capable GPUs found");
+                } else {
+                    for (i, gpu) in gpus.iter().enumerate() {
+                        println!("  [{}] {}", i, gpu);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  Error enumerating GPUs: {}", e);
+            }
+        }
+        println!();
+    }
+
+    fn enumerate_gpus() -> Result<Vec<String>> {
+        unsafe {
+            let entry = ash::Entry::linked();
+
+            // Create a minimal instance just for enumeration
+            let app_name = CString::new("device-lister")?;
+            let app_info = vk::ApplicationInfo {
+                p_application_name: app_name.as_ptr(),
+                application_version: vk::make_api_version(0, 1, 0, 0),
+                p_engine_name: app_name.as_ptr(),
+                engine_version: vk::make_api_version(0, 1, 0, 0),
+                api_version: vk::make_api_version(0, 1, 0, 0),
+                ..Default::default()
+            };
+
+            let create_info = vk::InstanceCreateInfo {
+                p_application_info: &app_info,
+                ..Default::default()
+            };
+
+            let instance = entry.create_instance(&create_info, None)?;
+            let physical_devices = instance.enumerate_physical_devices()?;
+
+            let mut gpu_list = Vec::new();
+
+            for device in physical_devices {
+                let properties = instance.get_physical_device_properties(device);
+                let name = CStr::from_ptr(properties.device_name.as_ptr())
+                    .to_string_lossy()
+                    .into_owned();
+
+                let device_type = match properties.device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => "Discrete GPU",
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => "Integrated GPU",
+                    vk::PhysicalDeviceType::VIRTUAL_GPU => "Virtual GPU",
+                    vk::PhysicalDeviceType::CPU => "CPU",
+                    _ => "Other",
+                };
+
+                // Get memory info
+                let mem_props = instance.get_physical_device_memory_properties(device);
+                let mut total_vram = 0u64;
+                for i in 0..mem_props.memory_heap_count as usize {
+                    let heap = mem_props.memory_heaps[i];
+                    if heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL) {
+                        total_vram += heap.size;
+                    }
+                }
+                let vram_gb = total_vram as f64 / (1024.0 * 1024.0 * 1024.0);
+
+                // Get Vulkan version
+                let major = vk::api_version_major(properties.api_version);
+                let minor = vk::api_version_minor(properties.api_version);
+                let patch = vk::api_version_patch(properties.api_version);
+
+                let info = format!(
+                    "{} ({}) - VRAM: {:.1} GB, Vulkan: {}.{}.{}",
+                    name, device_type, vram_gb, major, minor, patch
+                );
+
+                gpu_list.push(info);
+            }
+
+            instance.destroy_instance(None);
+            Ok(gpu_list)
+        }
+    }
+
+    fn list_midi_devices() {
+        println!("🎹 MIDI Input Devices:");
+        println!("----------------------");
+
+        match MidiInput::new("device-lister") {
+            Ok(mut midi_in) => {
+                midi_in.ignore(Ignore::None);
+                let ports = midi_in.ports();
+
+                if ports.is_empty() {
+                    println!("  No MIDI input devices found");
+                } else {
+                    for (i, port) in ports.iter().enumerate() {
+                        match midi_in.port_name(port) {
+                            Ok(name) => println!("  [{}] {}", i, name),
+                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  Error initializing MIDI: {}", e);
+            }
+        }
+        println!();
+    }
+
+    fn list_audio_devices() {
+        println!("🎵 Audio Input Devices:");
+        println!("----------------------");
+
+        let host = cpal::default_host();
+
+        // Show default device
+        if let Some(device) = host.default_input_device() {
+            match device.name() {
+                Ok(name) => println!("  [DEFAULT] {}", name),
+                Err(e) => println!("  [DEFAULT] <Error reading name: {}>", e),
+            }
+        }
+
+        // List all input devices
+        match host.input_devices() {
+            Ok(devices) => {
+                let devices: Vec<_> = devices.collect();
+                if devices.is_empty() {
+                    println!("  No audio input devices found");
+                } else {
+                    for (i, device) in devices.iter().enumerate() {
+                        match device.name() {
+                            Ok(name) => {
+                                // Get supported configs for more info
+                                let config_info = match device.supported_input_configs() {
+                                    Ok(configs) => {
+                                        let configs: Vec<_> = configs.collect();
+                                        if !configs.is_empty() {
+                                            let first = &configs[0];
+                                            let last = &configs[configs.len() - 1];
+                                            format!(
+                                                " ({}Hz-{}Hz, {} channels)",
+                                                first.min_sample_rate().0,
+                                                last.max_sample_rate().0,
+                                                first.channels()
+                                            )
+                                        } else {
+                                            String::new()
+                                        }
+                                    }
+                                    Err(_) => String::new(),
+                                };
+
+                                println!("  [{}] {}{}", i, name, config_info);
+                            }
+                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  Error enumerating audio devices: {}", e);
+            }
+        }
+
+        println!("\n🎵 Audio Output Devices:");
+        println!("----------------------");
+
+        // Show default output device
+        if let Some(device) = host.default_output_device() {
+            match device.name() {
+                Ok(name) => println!("  [DEFAULT] {}", name),
+                Err(e) => println!("  [DEFAULT] <Error reading name: {}>", e),
+            }
+        }
+
+        // List all output devices
+        match host.output_devices() {
+            Ok(devices) => {
+                let devices: Vec<_> = devices.collect();
+                if devices.is_empty() {
+                    println!("  No audio output devices found");
+                } else {
+                    for (i, device) in devices.iter().enumerate() {
+                        match device.name() {
+                            Ok(name) => println!("  [{}] {}", i, name),
+                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  Error enumerating audio output devices: {}", e);
+            }
+        }
+        println!();
+    }
+}
+
+
 
 // ==================== Shader Management ====================
 
@@ -1403,8 +1625,7 @@ impl Drop for Gfx {
 // ==================== Optimized Input Handling ====================
 
 pub struct InputManager {
-    midi_state: Arc<Mutex<MidiState>>,
-    _midi_connection: Option<midir::MidiInputConnection<()>>,
+    midi_manager: MidiManager,
     audio_state: Arc<Mutex<AudioState>>,
     _audio_stream: Option<cpal::Stream>,
     osc_manager: OscManager, // Add this line
@@ -1413,13 +1634,22 @@ pub struct InputManager {
 impl InputManager {
     pub fn new() -> Self {
         Self {
-            midi_state: Arc::new(Mutex::new(MidiState::default())),
-            _midi_connection: None,
+            midi_manager: MidiManager::new(),
             audio_state: Arc::new(Mutex::new(AudioState::new())),
             _audio_stream: None,
             osc_manager: OscManager::new(OscConfig::default()),
         }
     }
+
+    pub fn setup_midi(&mut self, config: &MidiConfig) {
+        if !config.enabled {
+            println!("MIDI disabled in configuration");
+            return;
+        }
+
+        self.midi_manager.setup(config);
+    }
+
     pub fn setup_osc(&mut self, config: &OscConfig) {
         self.osc_manager = OscManager::new(config.clone());
         if let Err(e) = self.osc_manager.start() {
@@ -1430,7 +1660,7 @@ impl InputManager {
     // OPTIMIZATION #2: Single function to get all frame state with minimal lock time
     pub fn get_frame_state(&self) -> FrameState {
         // Get MIDI state (quick clone)
-        let midi = self.midi_state.lock().unwrap().clone();
+        let midi = self.midi_manager.get_state_snapshot();
 
         // Get audio levels and perform analysis in one lock acquisition
         let audio_levels = {
@@ -1441,22 +1671,6 @@ impl InputManager {
         FrameState { midi, audio_levels, osc }
     }
 
-    pub fn setup_midi(&mut self, config: &MidiConfig) {
-        if !config.enabled {
-            println!("MIDI disabled in configuration");
-            return;
-        }
-
-        match self.try_setup_midi(config) {
-            Ok(connection) => {
-                self._midi_connection = Some(connection);
-                println!("MIDI input connected successfully!");
-            }
-            Err(e) => {
-                eprintln!("MIDI setup failed: {}. Continuing without MIDI input.", e);
-            }
-        }
-    }
 
     pub fn setup_audio(&mut self, config: &AudioConfig) {
         if !config.enabled {
@@ -1479,46 +1693,6 @@ impl InputManager {
         }
     }
 
-    fn try_setup_midi(&self, config: &MidiConfig) -> Result<midir::MidiInputConnection<()>, Box<dyn std::error::Error>> {
-        let mut midi_in = MidiInput::new("Vulkan MIDI Visualizer")?;
-        midi_in.ignore(Ignore::None);
-
-        let ports = midi_in.ports();
-        if ports.is_empty() {
-            return Err("No MIDI input ports available".into());
-        }
-
-        let selected_port = self.select_midi_port(&midi_in, &ports, config)?;
-        let port_name = midi_in.port_name(selected_port)?;
-        println!("Connecting to MIDI port: {}", port_name);
-
-        let midi_state = Arc::clone(&self.midi_state);
-        let connection = midi_in.connect(selected_port, "vulkan-visualizer", move |_timestamp, message, _| {
-            Self::handle_midi_message(&midi_state, message);
-        }, ())?;
-
-        Ok(connection)
-    }
-
-    fn select_midi_port<'a>(
-        &self,
-        midi_in: &MidiInput,
-        ports: &'a [midir::MidiInputPort],
-        config: &MidiConfig,
-    ) -> Result<&'a midir::MidiInputPort, Box<dyn std::error::Error>> {
-        if let Some(ref target_name) = config.port_name {
-            ports
-                .iter()
-                .find(|port| {
-                    midi_in.port_name(port)
-                        .map_or(false, |name| name.contains(target_name))
-                })
-                .or_else(|| ports.first())
-                .ok_or_else(|| "No suitable MIDI port found".into())
-        } else {
-            ports.first().ok_or_else(|| "No MIDI ports available".into())
-        }
-    }
 
     fn try_setup_audio(&self, config: &AudioConfig) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
         let host = cpal::default_host();
@@ -1603,79 +1777,6 @@ impl InputManager {
         Ok(stream_config)
     }
 
-    fn handle_midi_message(midi_state: &Arc<Mutex<MidiState>>, message: &[u8]) {
-        if message.is_empty() {
-            return;
-        }
-
-        let Ok(mut state) = midi_state.lock() else { return };
-        let status = message[0];
-
-        match status & 0xF0 {
-            0x80 => Self::handle_note_off(&mut state, message),
-            0x90 => Self::handle_note_on(&mut state, message),
-            0xB0 => Self::handle_control_change(&mut state, message),
-            0xE0 => Self::handle_pitch_bend(&mut state, message),
-            _ => {}
-        }
-    }
-
-    fn handle_note_off(state: &mut MidiState, message: &[u8]) {
-        if message.len() >= 3 {
-            let note = message[1] as usize;
-            if note < MAX_NOTES && state.notes[note] > 0.0 {
-                state.note_count = state.note_count.saturating_sub(1);
-                state.notes[note] = 0.0;
-                println!("Note Off: {} (Count: {})", note, state.note_count);
-            }
-        }
-    }
-
-    fn handle_note_on(state: &mut MidiState, message: &[u8]) {
-        if message.len() >= 3 {
-            let note = message[1] as usize;
-            let velocity = message[2];
-
-            if note < MAX_NOTES {
-                if velocity == 0 {
-                    // Note off via velocity 0
-                    if state.notes[note] > 0.0 {
-                        state.note_count = state.note_count.saturating_sub(1);
-                    }
-                    state.notes[note] = 0.0;
-                    println!("Note Off: {} (Count: {})", note, state.note_count);
-                } else {
-                    // Note on
-                    if state.notes[note] == 0.0 {
-                        state.note_count += 1;
-                    }
-                    state.notes[note] = velocity as f32 / 127.0;
-                    state.last_note = note as u8;
-                    println!("Note On: {} Velocity: {} (Count: {})", note, velocity, state.note_count);
-                }
-            }
-        }
-    }
-
-    fn handle_control_change(state: &mut MidiState, message: &[u8]) {
-        if message.len() >= 3 {
-            let controller = message[1] as usize;
-            let value = message[2];
-
-            if controller < MAX_CONTROLLERS {
-                state.controllers[controller] = value as f32 / 127.0;
-                println!("CC{}: {}", controller, value);
-            }
-        }
-    }
-
-    fn handle_pitch_bend(state: &mut MidiState, message: &[u8]) {
-        if message.len() >= 3 {
-            let bend_value = (message[2] as u16) << 7 | (message[1] as u16);
-            state.pitch_bend = (bend_value as f32 / 8192.0) - 1.0;
-            println!("Pitch Bend: {:.3}", state.pitch_bend);
-        }
-    }
 }
 
 // ==================== Main Application ====================
@@ -1987,6 +2088,13 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
+
+    // Handle device listing
+    if args.list_devices {
+        DeviceLister::list_all_devices();
+        return Ok(());
+    }
+
     let mut config = load_or_create_config(&args.config)?;
     config.merge_with_args(&args);
 
