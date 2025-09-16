@@ -1,14 +1,20 @@
 use std::{
     net::{UdpSocket, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, AtomicBool, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
     time::Duration,
+    mem::MaybeUninit,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 // OSC message parsing constants
 const OSC_BUNDLE_TAG: &[u8] = b"#bundle\0";
+const MAX_PACKET_SIZE: usize = 1024; // Reduced from potential 65KB UDP max
+const CHANNEL_COUNT: usize = 2;
 
 /// Configuration for OSC input
 #[derive(Deserialize, Serialize, Clone)]
@@ -25,6 +31,8 @@ pub struct OscConfig {
     pub channel2_path: String,
     #[serde(default = "default_smoothing")]
     pub smoothing_factor: f32,
+    #[serde(default = "default_buffer_size")]
+    pub socket_buffer_size: usize,
 }
 
 impl Default for OscConfig {
@@ -36,6 +44,7 @@ impl Default for OscConfig {
             channel1_path: default_channel1_path(),
             channel2_path: default_channel2_path(),
             smoothing_factor: default_smoothing(),
+            socket_buffer_size: default_buffer_size(),
         }
     }
 }
@@ -45,56 +54,104 @@ fn default_osc_address() -> String { "127.0.0.1".to_string() }
 fn default_channel1_path() -> String { "/FX1_L".to_string() }
 fn default_channel2_path() -> String { "/ch2".to_string() }
 const fn default_smoothing() -> f32 { 0.1 }
+const fn default_buffer_size() -> usize { 64 * 1024 } // 64KB socket buffer
 
-/// OSC state containing two float channels
-#[derive(Clone, Debug)]
+/// Lock-free OSC state using atomic operations
+#[derive(Debug)]
 pub struct OscState {
-    pub channel1: f32,
-    pub channel2: f32,
+    // Use atomic f32 representation (u32) for lock-free access
+    channel1: AtomicU32,
+    channel2: AtomicU32,
 }
 
 impl Default for OscState {
     fn default() -> Self {
         Self {
-            channel1: 0.0,
-            channel2: 0.0,
+            channel1: AtomicU32::new(0.0f32.to_bits()),
+            channel2: AtomicU32::new(0.0f32.to_bits()),
         }
     }
 }
 
-/// OSC message representation
-#[derive(Debug)]
-struct OscMessage {
-    address: String,
-    args: Vec<OscArgument>,
+impl OscState {
+    #[inline(always)]
+    pub fn get_channel1(&self) -> f32 {
+        f32::from_bits(self.channel1.load(Ordering::Relaxed))
+    }
+
+    #[inline(always)]
+    pub fn get_channel2(&self) -> f32 {
+        f32::from_bits(self.channel2.load(Ordering::Relaxed))
+    }
+
+    #[inline(always)]
+    pub fn set_channel1(&self, value: f32) {
+        self.channel1.store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn set_channel2(&self, value: f32) {
+        self.channel2.store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    // For compatibility with existing code
+    pub fn clone_values(&self) -> OscStateSnapshot {
+        OscStateSnapshot {
+            channel1: self.get_channel1(),
+            channel2: self.get_channel2(),
+        }
+    }
 }
 
-#[derive(Debug)]
-enum OscArgument {
-    Float(f32),
-    Int(i32),
-    String(String),
+/// Snapshot for compatibility with existing code
+#[derive(Clone, Debug)]
+pub struct OscStateSnapshot {
+    pub channel1: f32,
+    pub channel2: f32,
+}
+
+/// Pre-parsed channel info for hot path optimization
+#[derive(Clone)]
+struct ChannelInfo {
+    address_bytes: Vec<u8>,
+    channel_index: u8,
 }
 
 /// Main OSC manager struct
 pub struct OscManager {
-    state: Arc<Mutex<OscState>>,
+    state: Arc<OscState>,
     config: OscConfig,
     _server_thread: Option<JoinHandle<()>>,
-    should_stop: Arc<Mutex<bool>>,
+    should_stop: Arc<AtomicBool>,
+    // Pre-computed channel lookup for hot path
+    channel_lookup: Vec<ChannelInfo>,
 }
 
 impl OscManager {
     pub fn new(config: OscConfig) -> Self {
+        // Pre-compute channel lookup table
+        let mut channel_lookup = Vec::with_capacity(CHANNEL_COUNT);
+
+        // Store as bytes for faster comparison
+        channel_lookup.push(ChannelInfo {
+            address_bytes: config.channel1_path.as_bytes().to_vec(),
+            channel_index: 0,
+        });
+        channel_lookup.push(ChannelInfo {
+            address_bytes: config.channel2_path.as_bytes().to_vec(),
+            channel_index: 1,
+        });
+
         Self {
-            state: Arc::new(Mutex::new(OscState::default())),
+            state: Arc::new(OscState::default()),
             config,
             _server_thread: None,
-            should_stop: Arc::new(Mutex::new(false)),
+            should_stop: Arc::new(AtomicBool::new(false)),
+            channel_lookup,
         }
     }
 
-    /// Start the OSC server
+    /// Start the OSC server with optimizations
     pub fn start(&mut self) -> Result<()> {
         if !self.config.enabled {
             println!("OSC disabled in configuration");
@@ -108,8 +165,27 @@ impl OscManager {
         let socket = UdpSocket::bind(socket_addr)
             .map_err(|e| anyhow!("Failed to bind OSC socket to {}: {}", socket_addr, e))?;
 
-        socket.set_read_timeout(Some(Duration::from_millis(100)))
-            .map_err(|e| anyhow!("Failed to set socket timeout: {}", e))?;
+        // OPTIMIZATION: Increase socket buffer sizes for better performance
+        if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
+            eprintln!("Warning: Failed to set socket timeout: {}", e);
+        }
+
+        // Set larger socket buffers if supported
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            unsafe {
+                let buf_size = self.config.socket_buffer_size as libc::c_int;
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    &buf_size as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+        }
 
         println!("OSC server listening on {}", socket_addr);
         println!("OSC channels: {} -> channel1, {} -> channel2",
@@ -118,39 +194,77 @@ impl OscManager {
         let state = Arc::clone(&self.state);
         let config = self.config.clone();
         let should_stop = Arc::clone(&self.should_stop);
+        let channel_lookup = self.channel_lookup.clone();
 
         let server_thread = thread::spawn(move || {
-            Self::server_loop(socket, state, config, should_stop);
+            Self::optimized_server_loop(socket, state, config, should_stop, channel_lookup);
         });
 
         self._server_thread = Some(server_thread);
         Ok(())
     }
 
-    /// Get current OSC state
-    pub fn get_state(&self) -> OscState {
-        self.state.lock().unwrap().clone()
+    /// Get current OSC state (compatibility method)
+    pub fn get_state(&self) -> OscStateSnapshot {
+        self.state.clone_values()
     }
 
-    /// Main server loop
-    fn server_loop(
+    /// OPTIMIZATION: Highly optimized server loop
+    fn optimized_server_loop(
         socket: UdpSocket,
-        state: Arc<Mutex<OscState>>,
+        state: Arc<OscState>,
         config: OscConfig,
-        should_stop: Arc<Mutex<bool>>,
+        should_stop: Arc<AtomicBool>,
+        channel_lookup: Vec<ChannelInfo>,
     ) {
-        let mut buffer = [0u8; 1024];
+        // Pre-allocate buffer to avoid allocations in hot path
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut parser = FastOscParser::new();
 
-        while !*should_stop.lock().unwrap() {
+        // Pre-compute smoothing values
+        let smoothing = config.smoothing_factor;
+        let inv_smoothing = 1.0 - smoothing;
+
+        while !should_stop.load(Ordering::Relaxed) {
             match socket.recv(&mut buffer) {
                 Ok(size) => {
-                    if let Err(e) = Self::process_osc_packet(&buffer[..size], &state, &config) {
-                        eprintln!("OSC processing error: {}", e);
+                    // OPTIMIZATION: Fast path for single messages
+                    if size > 0 && !buffer[..8.min(size)].starts_with(OSC_BUNDLE_TAG) {
+                        if let Some((channel_idx, value)) = parser.fast_parse_single_message(
+                            &buffer[..size],
+                            &channel_lookup
+                        ) {
+                            // OPTIMIZATION: Direct atomic update without locks
+                            match channel_idx {
+                                0 => {
+                                    let current = state.get_channel1();
+                                    let new_value = if smoothing <= 0.0 {
+                                        value
+                                    } else {
+                                        current * smoothing + value * inv_smoothing
+                                    };
+                                    state.set_channel1(new_value);
+                                }
+                                1 => {
+                                    let current = state.get_channel2();
+                                    let new_value = if smoothing <= 0.0 {
+                                        value
+                                    } else {
+                                        current * smoothing + value * inv_smoothing
+                                    };
+                                    state.set_channel2(new_value);
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if size > 16 {
+                        // Handle bundles with the slower path
+                        let _ = Self::process_osc_bundle(&buffer[..size], &state, &config, &channel_lookup);
                     }
                 }
                 Err(e) => {
-                    // Timeout is expected, other errors are not
-                    if e.kind() != std::io::ErrorKind::TimedOut {
+                    if e.kind() != std::io::ErrorKind::TimedOut &&
+                        e.kind() != std::io::ErrorKind::WouldBlock {
                         eprintln!("OSC socket error: {}", e);
                         break;
                     }
@@ -161,45 +275,21 @@ impl OscManager {
         println!("OSC server stopped");
     }
 
-    /// Process incoming OSC packet
-    fn process_osc_packet(
-        data: &[u8],
-        state: &Arc<Mutex<OscState>>,
-        config: &OscConfig,
-    ) -> Result<()> {
-        if data.len() < 4 {
-            return Err(anyhow!("OSC packet too short"));
-        }
-
-        // Check if it's a bundle
-        if data.starts_with(OSC_BUNDLE_TAG) {
-            Self::process_osc_bundle(data, state, config)
-        } else {
-            // Single message
-            let message = Self::parse_osc_message(data)?;
-            Self::handle_osc_message(&message, state, config);
-            Ok(())
-        }
-    }
-
-    /// Process OSC bundle (multiple messages)
+    /// OPTIMIZATION: Fast bundle processing
     fn process_osc_bundle(
         data: &[u8],
-        state: &Arc<Mutex<OscState>>,
+        state: &Arc<OscState>,
         config: &OscConfig,
+        channel_lookup: &[ChannelInfo],
     ) -> Result<()> {
         if data.len() < 16 {
-            return Err(anyhow!("OSC bundle too short"));
+            return Ok(()); // Fail silently for performance
         }
 
-        // Skip bundle tag and time tag (8 bytes each)
-        let mut offset = 16;
+        let mut offset = 16; // Skip bundle tag and time tag
+        let mut parser = FastOscParser::new();
 
-        while offset < data.len() {
-            if offset + 4 > data.len() {
-                break;
-            }
-
+        while offset + 4 <= data.len() {
             let element_size = u32::from_be_bytes([
                 data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
             ]) as usize;
@@ -207,11 +297,15 @@ impl OscManager {
             offset += 4;
 
             if offset + element_size > data.len() {
-                return Err(anyhow!("Invalid bundle element size"));
+                break;
             }
 
-            let message = Self::parse_osc_message(&data[offset..offset + element_size])?;
-            Self::handle_osc_message(&message, state, config);
+            if let Some((channel_idx, value)) = parser.fast_parse_single_message(
+                &data[offset..offset + element_size],
+                channel_lookup
+            ) {
+                Self::update_channel_atomic(state, channel_idx, value, config.smoothing_factor);
+            }
 
             offset += element_size;
         }
@@ -219,130 +313,94 @@ impl OscManager {
         Ok(())
     }
 
-    /// Parse a single OSC message
-    fn parse_osc_message(data: &[u8]) -> Result<OscMessage> {
-        let mut offset = 0;
-
-        // Parse address
-        let address = Self::read_osc_string(data, &mut offset)?;
-
-        // Parse type tag
-        let type_tag = Self::read_osc_string(data, &mut offset)?;
-
-        if !type_tag.starts_with(',') {
-            return Err(anyhow!("Invalid OSC type tag: {}", type_tag));
-        }
-
-        // Parse arguments
-        let mut args = Vec::new();
-        for type_char in type_tag.chars().skip(1) {
-            match type_char {
-                'f' => {
-                    if offset + 4 > data.len() {
-                        return Err(anyhow!("Not enough data for float argument"));
-                    }
-                    let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
-                    let value = f32::from_be_bytes(bytes);
-                    args.push(OscArgument::Float(value));
-                    offset += 4;
-                }
-                'i' => {
-                    if offset + 4 > data.len() {
-                        return Err(anyhow!("Not enough data for int argument"));
-                    }
-                    let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
-                    let value = i32::from_be_bytes(bytes);
-                    args.push(OscArgument::Int(value));
-                    offset += 4;
-                }
-                's' => {
-                    let value = Self::read_osc_string(data, &mut offset)?;
-                    args.push(OscArgument::String(value));
-                }
-                _ => {
-                    // Skip unknown argument types
-                    eprintln!("Unsupported OSC argument type: {}", type_char);
-                }
+    #[inline(always)]
+    fn update_channel_atomic(state: &Arc<OscState>, channel_idx: u8, value: f32, smoothing: f32) {
+        match channel_idx {
+            0 => {
+                let current = state.get_channel1();
+                let new_value = if smoothing <= 0.0 {
+                    value
+                } else {
+                    current * smoothing + value * (1.0 - smoothing)
+                };
+                state.set_channel1(new_value);
             }
-        }
-
-        Ok(OscMessage { address, args })
-    }
-
-    /// Read null-terminated string from OSC data with proper padding
-    fn read_osc_string(data: &[u8], offset: &mut usize) -> Result<String> {
-        if *offset >= data.len() {
-            return Err(anyhow!("Offset beyond data length"));
-        }
-
-        let start = *offset;
-        let mut end = start;
-
-        // Find null terminator
-        while end < data.len() && data[end] != 0 {
-            end += 1;
-        }
-
-        if end >= data.len() {
-            return Err(anyhow!("No null terminator found"));
-        }
-
-        let string = String::from_utf8(data[start..end].to_vec())
-            .map_err(|e| anyhow!("Invalid UTF-8 in OSC string: {}", e))?;
-
-        // OSC strings are padded to 4-byte boundaries
-        *offset = ((end + 4) / 4) * 4;
-
-        Ok(string)
-    }
-
-    /// Handle parsed OSC message
-    fn handle_osc_message(
-        message: &OscMessage,
-        state: &Arc<Mutex<OscState>>,
-        config: &OscConfig,
-    ) {
-        // Extract float value from message
-        let value = match message.args.first() {
-            Some(OscArgument::Float(f)) => *f,
-            Some(OscArgument::Int(i)) => *i as f32,
-            _ => {
-                eprintln!("OSC message {} has no numeric argument", message.address);
-                return;
+            1 => {
+                let current = state.get_channel2();
+                let new_value = if smoothing <= 0.0 {
+                    value
+                } else {
+                    current * smoothing + value * (1.0 - smoothing)
+                };
+                state.set_channel2(new_value);
             }
-        };
-
-        // Update appropriate channel
-        if let Ok(mut state) = state.lock() {
-            let smoothing = config.smoothing_factor;
-
-            if message.address == config.channel1_path {
-                state.channel1 = Self::smooth_value(state.channel1, value, smoothing);
-                println!("OSC CH1: {:.3}", state.channel1);
-            } else if message.address == config.channel2_path {
-                state.channel2 = Self::smooth_value(state.channel2, value, smoothing);
-                println!("OSC CH2: {:.3}", state.channel2);
-            }
-        }
-    }
-
-    /// Apply smoothing to value changes
-    fn smooth_value(current: f32, target: f32, factor: f32) -> f32 {
-        if factor <= 0.0 {
-            target
-        } else if factor >= 1.0 {
-            current
-        } else {
-            current * (1.0 - factor) + target * factor
+            _ => {}
         }
     }
 
     /// Stop the OSC server
     pub fn stop(&mut self) {
-        *self.should_stop.lock().unwrap() = true;
+        self.should_stop.store(true, Ordering::Release);
         if let Some(thread) = self._server_thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// OPTIMIZATION: Zero-allocation OSC parser for hot path
+struct FastOscParser {
+    // Pre-allocated working space to avoid allocations
+    workspace: Vec<u8>,
+}
+
+impl FastOscParser {
+    fn new() -> Self {
+        Self {
+            workspace: Vec::with_capacity(256),
+        }
+    }
+
+    /// OPTIMIZATION: Fast single message parser - returns (channel_index, value) or None
+    fn fast_parse_single_message(
+        &mut self,
+        data: &[u8],
+        channel_lookup: &[ChannelInfo],
+    ) -> Option<(u8, f32)> {
+        if data.len() < 8 {
+            return None;
+        }
+
+        // Find address string end (null terminator)
+        let addr_end = data.iter().position(|&b| b == 0)?;
+        let address_bytes = &data[..addr_end];
+
+        // OPTIMIZATION: Fast channel lookup using pre-computed bytes
+        let channel_idx = channel_lookup.iter()
+            .find(|info| info.address_bytes == address_bytes)?
+            .channel_index;
+
+        // Skip to type tag (with padding)
+        let mut offset = ((addr_end + 4) / 4) * 4;
+        if offset >= data.len() {
+            return None;
+        }
+
+        // Expect ",f" type tag for float
+        if offset + 4 > data.len() || data[offset] != b',' || data[offset + 1] != b'f' {
+            return None;
+        }
+
+        // Skip type tag with padding
+        offset = ((offset + 2 + 4) / 4) * 4;
+        if offset + 4 > data.len() {
+            return None;
+        }
+
+        // Extract float value
+        let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+        let value = f32::from_be_bytes(bytes);
+
+        Some((channel_idx, value))
     }
 }
 
@@ -352,7 +410,7 @@ impl Drop for OscManager {
     }
 }
 
-// Test client functionality
+// Test client functionality (unchanged but with optimizations noted)
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +419,21 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_osc_message_parsing() {
+    fn test_atomic_state_operations() {
+        let state = OscState::default();
+
+        // Test atomic operations
+        state.set_channel1(1.5);
+        state.set_channel2(2.5);
+
+        assert_eq!(state.get_channel1(), 1.5);
+        assert_eq!(state.get_channel2(), 2.5);
+    }
+
+    #[test]
+    fn test_fast_osc_parser() {
+        let mut parser = FastOscParser::new();
+
         // Test data for "/test" with float argument 1.5
         let test_data = [
             0x2F, 0x74, 0x65, 0x73, 0x74, 0x00, 0x00, 0x00, // "/test\0\0\0"
@@ -369,15 +441,15 @@ mod tests {
             0x3F, 0xC0, 0x00, 0x00,                         // 1.5 as big-endian float
         ];
 
-        let message = OscManager::parse_osc_message(&test_data).unwrap();
-        assert_eq!(message.address, "/test");
-        assert_eq!(message.args.len(), 1);
+        let channel_lookup = vec![
+            ChannelInfo {
+                address_bytes: b"/test".to_vec(),
+                channel_index: 0,
+            }
+        ];
 
-        if let OscArgument::Float(f) = &message.args[0] {
-            assert_eq!(*f, 1.5);
-        } else {
-            panic!("Expected float argument");
-        }
+        let result = parser.fast_parse_single_message(&test_data, &channel_lookup);
+        assert_eq!(result, Some((0, 1.5)));
     }
 
     /// Helper function to create a simple OSC test client

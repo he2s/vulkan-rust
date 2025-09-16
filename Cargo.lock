@@ -1875,6 +1875,7 @@ dependencies = [
  "clap",
  "cpal",
  "env_logger",
+ "libc",
  "midir",
  "raw-window-handle",
  "rustfft",

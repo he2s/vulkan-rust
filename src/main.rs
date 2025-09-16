@@ -1,7 +1,7 @@
-use crate::input::midi::{MidiConfig, MidiState, MidiManager};
+use crate::input::midi::{MidiConfig, MidiStateSnapshot, MidiManager};
 use crate::input::osc::OscConfig;
 use crate::input::osc::OscManager;
-use crate::input::osc::OscState;
+use crate::input::osc::OscStateSnapshot;
 use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash::khr::{surface, swapchain};
@@ -540,9 +540,9 @@ impl ShaderSources {
 // PERFORMANCE OPTIMIZATION #2: Frame state snapshot to reduce mutex lock frequency
 #[derive(Clone, Debug)]
 pub struct FrameState {
-    pub midi: MidiState,
+    pub midi: MidiStateSnapshot,
     pub audio_levels: AudioLevels,
-    pub osc: OscState, // Add this line
+    pub osc: OscStateSnapshot, // Changed from OscState
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1667,7 +1667,7 @@ impl InputManager {
             let mut audio_state = self.audio_state.lock().unwrap();
             audio_state.analyze_and_get_levels()
         };
-        let osc = self.osc_manager.get_state(); // Add this line
+        let osc = self.osc_manager.get_state(); // Returns OscStateSnapshot
         FrameState { midi, audio_levels, osc }
     }
 
