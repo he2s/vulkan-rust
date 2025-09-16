@@ -1661,6 +1661,7 @@ impl InputManager {
     pub fn get_frame_state(&self) -> FrameState {
         // Get MIDI state (quick clone)
         let midi = self.midi_manager.get_state_snapshot();
+        //let midi_state = self.midi_manager.get_state();
 
         // Get audio levels and perform analysis in one lock acquisition
         let audio_levels = {
@@ -1909,6 +1910,7 @@ impl App {
 
         let note_velocity = if frame_state.midi.note_count > 0 {
             frame_state.midi.notes[frame_state.midi.last_note as usize]
+            //frame
         } else {
             0.0
         };
