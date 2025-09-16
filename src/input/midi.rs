@@ -198,7 +198,15 @@ impl MidiManager {
             return Err("No MIDI ports".into());
         }
 
-        let port = ports.first().ok_or("No ports")?;
+        //let port = ports.first().ok_or("No ports")?;
+        let port = if let Some(name_sub) = &config.port_name {
+            ports.iter()
+                .find(|p| midi_in.port_name(p).map_or(false, |n| n.contains(name_sub)))
+                .ok_or("Configured MIDI port not found")?
+        } else {
+            &ports[0]
+        };
+
         let state = Arc::clone(&self.state);
 
         let connection = midi_in.connect(
