@@ -1,40 +1,33 @@
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
-use midir::{MidiInput, MidiInputConnection, Ignore};
+use midir::{Ignore, MidiInput, MidiInputConnection};
+use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicU32, AtomicU8, Ordering},
     Arc,
+    atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
-// Constants
 const MAX_NOTES: usize = 128;
 const MAX_CONTROLLERS: usize = 128;
 
-// OPTIMIZATION: Pre-computed constants for faster math
 const INV_127: f32 = 1.0 / 127.0;
 const INV_8192: f32 = 1.0 / 8192.0;
 
-// OPTIMIZATION: Cache line aligned for better CPU cache performance
 #[repr(align(64))]
 #[derive(Debug)]
 pub struct MidiState {
-    // Group frequently accessed together for cache locality
     notes: [AtomicU32; MAX_NOTES],
     last_note: AtomicU8,
     note_count: AtomicU32,
 
-    // Separate cache line for controllers
-    _pad1: [u8; 52], // Padding to align to cache line
+    _pad1: [u8; 52],
     controllers: [AtomicU32; MAX_CONTROLLERS],
 
-    // Separate cache line for pitch bend
-    _pad2: [u8; 64], // Padding to align to cache line
+    _pad2: [u8; 64],
     pitch_bend: AtomicU32,
 }
 
 impl Default for MidiState {
     fn default() -> Self {
-        // OPTIMIZATION: Use const for compile-time initialization
         const ZERO: AtomicU32 = AtomicU32::new(0);
         const HALF: AtomicU32 = AtomicU32::new(0x3F000000); // 0.5f32.to_bits()
 
@@ -51,25 +44,19 @@ impl Default for MidiState {
 }
 
 impl MidiState {
-    // OPTIMIZATION: Use unchecked indexing in release mode
     #[inline(always)]
     pub fn get_note(&self, index: usize) -> f32 {
         debug_assert!(index < MAX_NOTES);
-        unsafe {
-            f32::from_bits(
-                self.notes.get_unchecked(index).load(Ordering::Relaxed)
-            )
-        }
+        unsafe { f32::from_bits(self.notes.get_unchecked(index).load(Ordering::Relaxed)) }
     }
 
     #[inline(always)]
     pub fn set_note(&self, index: usize, value: f32) {
         debug_assert!(index < MAX_NOTES);
         unsafe {
-            self.notes.get_unchecked(index).store(
-                value.to_bits(),
-                Ordering::Relaxed
-            );
+            self.notes
+                .get_unchecked(index)
+                .store(value.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -78,7 +65,9 @@ impl MidiState {
         debug_assert!(index < MAX_CONTROLLERS);
         unsafe {
             f32::from_bits(
-                self.controllers.get_unchecked(index).load(Ordering::Relaxed)
+                self.controllers
+                    .get_unchecked(index)
+                    .load(Ordering::Relaxed),
             )
         }
     }
@@ -87,10 +76,9 @@ impl MidiState {
     pub fn set_controller(&self, index: usize, value: f32) {
         debug_assert!(index < MAX_CONTROLLERS);
         unsafe {
-            self.controllers.get_unchecked(index).store(
-                value.to_bits(),
-                Ordering::Relaxed
-            );
+            self.controllers
+                .get_unchecked(index)
+                .store(value.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -126,31 +114,36 @@ impl MidiState {
 
     #[inline(always)]
     pub fn decrement_note_count(&self) {
-        // OPTIMIZATION: Simpler saturating sub
-        let _ = self.note_count.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |x| if x > 0 { Some(x - 1) } else { Some(0) }
-        );
+        let _ = self
+            .note_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                if x > 0 { Some(x - 1) } else { Some(0) }
+            });
     }
 
-    // OPTIMIZATION: Vectorized batch operations using SIMD-friendly loops
     #[cfg(target_arch = "x86_64")]
     pub fn get_active_notes(&self, out: &mut Vec<(u8, f32)>) {
         out.clear();
 
-        // Process 4 notes at a time for better vectorization
         let mut i = 0;
         while i < MAX_NOTES {
             let v0 = f32::from_bits(self.notes[i].load(Ordering::Relaxed));
-            let v1 = f32::from_bits(self.notes[i+1].load(Ordering::Relaxed));
-            let v2 = f32::from_bits(self.notes[i+2].load(Ordering::Relaxed));
-            let v3 = f32::from_bits(self.notes[i+3].load(Ordering::Relaxed));
+            let v1 = f32::from_bits(self.notes[i + 1].load(Ordering::Relaxed));
+            let v2 = f32::from_bits(self.notes[i + 2].load(Ordering::Relaxed));
+            let v3 = f32::from_bits(self.notes[i + 3].load(Ordering::Relaxed));
 
-            if v0 > 0.0 { out.push((i as u8, v0)); }
-            if v1 > 0.0 { out.push(((i+1) as u8, v1)); }
-            if v2 > 0.0 { out.push(((i+2) as u8, v2)); }
-            if v3 > 0.0 { out.push(((i+3) as u8, v3)); }
+            if v0 > 0.0 {
+                out.push((i as u8, v0));
+            }
+            if v1 > 0.0 {
+                out.push(((i + 1) as u8, v1));
+            }
+            if v2 > 0.0 {
+                out.push(((i + 2) as u8, v2));
+            }
+            if v3 > 0.0 {
+                out.push(((i + 3) as u8, v3));
+            }
 
             i += 4;
         }
@@ -174,7 +167,6 @@ impl MidiManager {
         Arc::clone(&self.state)
     }
 
-    /// Get state snapshot for compatibility with existing code
     pub fn get_state_snapshot(&self) -> MidiStateSnapshot {
         self.state.snapshot()
     }
@@ -189,7 +181,10 @@ impl MidiManager {
         }
     }
 
-    fn try_connect(&self, config: &MidiConfig) -> Result<MidiInputConnection<()>, Box<dyn std::error::Error>> {
+    fn try_connect(
+        &self,
+        config: &MidiConfig,
+    ) -> Result<MidiInputConnection<()>, Box<dyn std::error::Error>> {
         let mut midi_in = MidiInput::new("MIDI Visualizer")?;
         midi_in.ignore(Ignore::None);
 
@@ -198,9 +193,9 @@ impl MidiManager {
             return Err("No MIDI ports".into());
         }
 
-        //let port = ports.first().ok_or("No ports")?;
         let port = if let Some(name_sub) = &config.port_name {
-            ports.iter()
+            ports
+                .iter()
                 .find(|p| midi_in.port_name(p).map_or(false, |n| n.contains(name_sub)))
                 .ok_or("Configured MIDI port not found")?
         } else {
@@ -222,32 +217,31 @@ impl MidiManager {
     }
 }
 
-// OPTIMIZATION: Fast message handler with minimal branching
 #[inline(always)]
 fn handle_message_optimized(state: &MidiState, msg: &[u8]) {
-    if msg.len() < 2 { return; }
+    if msg.len() < 2 {
+        return;
+    }
 
     let status = unsafe { *msg.get_unchecked(0) };
     let msg_type = status & 0xF0;
 
     match msg_type {
         0x80 | 0x90 => {
-            if msg.len() < 3 { return; }
+            if msg.len() < 3 {
+                return;
+            }
             unsafe {
                 let note = *msg.get_unchecked(1) as usize;
                 let velocity = *msg.get_unchecked(2);
 
-                // Handle note on/off
                 let new_velocity = if msg_type == 0x90 && velocity != 0 {
-                    // Note on
                     state.set_last_note(note as u8);
                     velocity as f32 * INV_127
                 } else {
-                    // Note off
                     0.0
                 };
 
-                // Update note count atomically
                 let old_velocity = state.get_note(note);
                 if old_velocity == 0.0 && new_velocity > 0.0 {
                     state.increment_note_count();
@@ -257,29 +251,32 @@ fn handle_message_optimized(state: &MidiState, msg: &[u8]) {
 
                 state.set_note(note, new_velocity);
             }
-        },
+        }
         0xB0 => {
-            if msg.len() < 3 { return; }
+            if msg.len() < 3 {
+                return;
+            }
             unsafe {
                 let controller = *msg.get_unchecked(1) as usize;
                 let value = *msg.get_unchecked(2);
                 state.set_controller(controller, value as f32 * INV_127);
             }
-        },
+        }
         0xE0 => {
-            if msg.len() < 3 { return; }
+            if msg.len() < 3 {
+                return;
+            }
             unsafe {
                 let lsb = *msg.get_unchecked(1) as u16;
                 let msb = *msg.get_unchecked(2) as u16;
                 let bend = (msb << 7) | lsb;
                 state.set_pitch_bend((bend as f32 * INV_8192) - 1.0);
             }
-        },
+        }
         _ => {}
     }
 }
 
-// OPTIMIZATION: Snapshot - using regular arrays for simpler Clone
 #[derive(Clone, Debug)]
 pub struct MidiStateSnapshot {
     pub notes: [f32; MAX_NOTES],
@@ -290,27 +287,22 @@ pub struct MidiStateSnapshot {
 }
 
 impl MidiState {
-    // OPTIMIZATION: Use memcpy-like batch read
     pub fn snapshot(&self) -> MidiStateSnapshot {
         let mut notes = [0.0f32; MAX_NOTES];
         let mut controllers = [0.5f32; MAX_CONTROLLERS];
 
-        // Unroll loop for better vectorization
         for chunk in 0..(MAX_NOTES / 8) {
             let base = chunk * 8;
             for i in 0..8 {
-                notes[base + i] = f32::from_bits(
-                    self.notes[base + i].load(Ordering::Relaxed)
-                );
+                notes[base + i] = f32::from_bits(self.notes[base + i].load(Ordering::Relaxed));
             }
         }
 
         for chunk in 0..(MAX_CONTROLLERS / 8) {
             let base = chunk * 8;
             for i in 0..8 {
-                controllers[base + i] = f32::from_bits(
-                    self.controllers[base + i].load(Ordering::Relaxed)
-                );
+                controllers[base + i] =
+                    f32::from_bits(self.controllers[base + i].load(Ordering::Relaxed));
             }
         }
 
@@ -323,7 +315,6 @@ impl MidiState {
         }
     }
 
-    // Alternative: If you need the original clone_values name for compatibility
     pub fn clone_values(&self) -> MidiStateSnapshot {
         self.snapshot()
     }

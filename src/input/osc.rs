@@ -1,22 +1,20 @@
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::{
-    net::{UdpSocket, SocketAddr},
+    mem::MaybeUninit,
+    net::{SocketAddr, UdpSocket},
     sync::{
-        atomic::{AtomicU32, AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
-    mem::MaybeUninit,
 };
-use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
 
-// OSC message parsing constants
 const OSC_BUNDLE_TAG: &[u8] = b"#bundle\0";
 const MAX_PACKET_SIZE: usize = 1024; // Reduced from potential 65KB UDP max
 const CHANNEL_COUNT: usize = 2;
 
-/// Configuration for OSC input
 #[derive(Deserialize, Serialize, Clone)]
 pub struct OscConfig {
     #[serde(default)]
@@ -49,17 +47,27 @@ impl Default for OscConfig {
     }
 }
 
-const fn default_osc_port() -> u16 { 7000 }
-fn default_osc_address() -> String { "127.0.0.1".to_string() }
-fn default_channel1_path() -> String { "/FX1_L".to_string() }
-fn default_channel2_path() -> String { "/ch2".to_string() }
-const fn default_smoothing() -> f32 { 0.1 }
-const fn default_buffer_size() -> usize { 64 * 1024 } // 64KB socket buffer
+const fn default_osc_port() -> u16 {
+    7000
+}
+fn default_osc_address() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_channel1_path() -> String {
+    "/FX1_L".to_string()
+}
+fn default_channel2_path() -> String {
+    "/ch2".to_string()
+}
+const fn default_smoothing() -> f32 {
+    0.1
+}
+const fn default_buffer_size() -> usize {
+    64 * 1024
+} // 64KB socket buffer
 
-/// Lock-free OSC state using atomic operations
 #[derive(Debug)]
 pub struct OscState {
-    // Use atomic f32 representation (u32) for lock-free access
     channel1: AtomicU32,
     channel2: AtomicU32,
 }
@@ -103,21 +111,18 @@ impl OscState {
     }
 }
 
-/// Snapshot for compatibility with existing code
 #[derive(Clone, Debug)]
 pub struct OscStateSnapshot {
     pub channel1: f32,
     pub channel2: f32,
 }
 
-/// Pre-parsed channel info for hot path optimization
 #[derive(Clone)]
 struct ChannelInfo {
     address_bytes: Vec<u8>,
     channel_index: u8,
 }
 
-/// Main OSC manager struct
 pub struct OscManager {
     state: Arc<OscState>,
     config: OscConfig,
@@ -129,10 +134,8 @@ pub struct OscManager {
 
 impl OscManager {
     pub fn new(config: OscConfig) -> Self {
-        // Pre-compute channel lookup table
         let mut channel_lookup = Vec::with_capacity(CHANNEL_COUNT);
 
-        // Store as bytes for faster comparison
         channel_lookup.push(ChannelInfo {
             address_bytes: config.channel1_path.as_bytes().to_vec(),
             channel_index: 0,
@@ -151,7 +154,6 @@ impl OscManager {
         }
     }
 
-    /// Start the OSC server with optimizations
     pub fn start(&mut self) -> Result<()> {
         if !self.config.enabled {
             println!("OSC disabled in configuration");
@@ -159,18 +161,17 @@ impl OscManager {
         }
 
         let bind_addr = format!("{}:{}", self.config.bind_address, self.config.port);
-        let socket_addr: SocketAddr = bind_addr.parse()
+        let socket_addr: SocketAddr = bind_addr
+            .parse()
             .map_err(|e| anyhow!("Invalid OSC bind address '{}': {}", bind_addr, e))?;
 
         let socket = UdpSocket::bind(socket_addr)
             .map_err(|e| anyhow!("Failed to bind OSC socket to {}: {}", socket_addr, e))?;
 
-        // OPTIMIZATION: Increase socket buffer sizes for better performance
         if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
             eprintln!("Warning: Failed to set socket timeout: {}", e);
         }
 
-        // Set larger socket buffers if supported
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
@@ -188,8 +189,10 @@ impl OscManager {
         }
 
         println!("OSC server listening on {}", socket_addr);
-        println!("OSC channels: {} -> channel1, {} -> channel2",
-                 self.config.channel1_path, self.config.channel2_path);
+        println!(
+            "OSC channels: {} -> channel1, {} -> channel2",
+            self.config.channel1_path, self.config.channel2_path
+        );
 
         let state = Arc::clone(&self.state);
         let config = self.config.clone();
@@ -204,12 +207,10 @@ impl OscManager {
         Ok(())
     }
 
-    /// Get current OSC state (compatibility method)
     pub fn get_state(&self) -> OscStateSnapshot {
         self.state.clone_values()
     }
 
-    /// OPTIMIZATION: Highly optimized server loop
     fn optimized_server_loop(
         socket: UdpSocket,
         state: Arc<OscState>,
@@ -217,24 +218,19 @@ impl OscManager {
         should_stop: Arc<AtomicBool>,
         channel_lookup: Vec<ChannelInfo>,
     ) {
-        // Pre-allocate buffer to avoid allocations in hot path
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let mut parser = FastOscParser::new();
 
-        // Pre-compute smoothing values
         let smoothing = config.smoothing_factor;
         let inv_smoothing = 1.0 - smoothing;
 
         while !should_stop.load(Ordering::Relaxed) {
             match socket.recv(&mut buffer) {
                 Ok(size) => {
-                    // OPTIMIZATION: Fast path for single messages
                     if size > 0 && !buffer[..8.min(size)].starts_with(OSC_BUNDLE_TAG) {
-                        if let Some((channel_idx, value)) = parser.fast_parse_single_message(
-                            &buffer[..size],
-                            &channel_lookup
-                        ) {
-                            // OPTIMIZATION: Direct atomic update without locks
+                        if let Some((channel_idx, value)) =
+                            parser.fast_parse_single_message(&buffer[..size], &channel_lookup)
+                        {
                             match channel_idx {
                                 0 => {
                                     let current = state.get_channel1();
@@ -259,12 +255,18 @@ impl OscManager {
                         }
                     } else if size > 16 {
                         // Handle bundles with the slower path
-                        let _ = Self::process_osc_bundle(&buffer[..size], &state, &config, &channel_lookup);
+                        let _ = Self::process_osc_bundle(
+                            &buffer[..size],
+                            &state,
+                            &config,
+                            &channel_lookup,
+                        );
                     }
                 }
                 Err(e) => {
-                    if e.kind() != std::io::ErrorKind::TimedOut &&
-                        e.kind() != std::io::ErrorKind::WouldBlock {
+                    if e.kind() != std::io::ErrorKind::TimedOut
+                        && e.kind() != std::io::ErrorKind::WouldBlock
+                    {
                         eprintln!("OSC socket error: {}", e);
                         break;
                     }
@@ -275,7 +277,6 @@ impl OscManager {
         println!("OSC server stopped");
     }
 
-    /// OPTIMIZATION: Fast bundle processing
     fn process_osc_bundle(
         data: &[u8],
         state: &Arc<OscState>,
@@ -283,15 +284,18 @@ impl OscManager {
         channel_lookup: &[ChannelInfo],
     ) -> Result<()> {
         if data.len() < 16 {
-            return Ok(()); // Fail silently for performance
+            return Ok(());
         }
 
-        let mut offset = 16; // Skip bundle tag and time tag
+        let mut offset = 16;
         let mut parser = FastOscParser::new();
 
         while offset + 4 <= data.len() {
             let element_size = u32::from_be_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]) as usize;
 
             offset += 4;
@@ -300,10 +304,9 @@ impl OscManager {
                 break;
             }
 
-            if let Some((channel_idx, value)) = parser.fast_parse_single_message(
-                &data[offset..offset + element_size],
-                channel_lookup
-            ) {
+            if let Some((channel_idx, value)) = parser
+                .fast_parse_single_message(&data[offset..offset + element_size], channel_lookup)
+            {
                 Self::update_channel_atomic(state, channel_idx, value, config.smoothing_factor);
             }
 
@@ -338,7 +341,6 @@ impl OscManager {
         }
     }
 
-    /// Stop the OSC server
     pub fn stop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
         if let Some(thread) = self._server_thread.take() {
@@ -347,9 +349,7 @@ impl OscManager {
     }
 }
 
-/// OPTIMIZATION: Zero-allocation OSC parser for hot path
 struct FastOscParser {
-    // Pre-allocated working space to avoid allocations
     workspace: Vec<u8>,
 }
 
@@ -360,7 +360,6 @@ impl FastOscParser {
         }
     }
 
-    /// OPTIMIZATION: Fast single message parser - returns (channel_index, value) or None
     fn fast_parse_single_message(
         &mut self,
         data: &[u8],
@@ -370,34 +369,34 @@ impl FastOscParser {
             return None;
         }
 
-        // Find address string end (null terminator)
         let addr_end = data.iter().position(|&b| b == 0)?;
         let address_bytes = &data[..addr_end];
 
-        // OPTIMIZATION: Fast channel lookup using pre-computed bytes
-        let channel_idx = channel_lookup.iter()
+        let channel_idx = channel_lookup
+            .iter()
             .find(|info| info.address_bytes == address_bytes)?
             .channel_index;
 
-        // Skip to type tag (with padding)
         let mut offset = ((addr_end + 4) / 4) * 4;
         if offset >= data.len() {
             return None;
         }
 
-        // Expect ",f" type tag for float
         if offset + 4 > data.len() || data[offset] != b',' || data[offset + 1] != b'f' {
             return None;
         }
 
-        // Skip type tag with padding
         offset = ((offset + 2 + 4) / 4) * 4;
         if offset + 4 > data.len() {
             return None;
         }
 
-        // Extract float value
-        let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+        let bytes = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
         let value = f32::from_be_bytes(bytes);
 
         Some((channel_idx, value))
@@ -410,7 +409,6 @@ impl Drop for OscManager {
     }
 }
 
-// Test client functionality (unchanged but with optimizations noted)
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +420,6 @@ mod tests {
     fn test_atomic_state_operations() {
         let state = OscState::default();
 
-        // Test atomic operations
         state.set_channel1(1.5);
         state.set_channel2(2.5);
 
@@ -434,45 +431,37 @@ mod tests {
     fn test_fast_osc_parser() {
         let mut parser = FastOscParser::new();
 
-        // Test data for "/test" with float argument 1.5
         let test_data = [
             0x2F, 0x74, 0x65, 0x73, 0x74, 0x00, 0x00, 0x00, // "/test\0\0\0"
-            0x2C, 0x66, 0x00, 0x00,                         // ",f\0\0"
-            0x3F, 0xC0, 0x00, 0x00,                         // 1.5 as big-endian float
+            0x2C, 0x66, 0x00, 0x00, // ",f\0\0"
+            0x3F, 0xC0, 0x00, 0x00, // 1.5 as big-endian float
         ];
 
-        let channel_lookup = vec![
-            ChannelInfo {
-                address_bytes: b"/test".to_vec(),
-                channel_index: 0,
-            }
-        ];
+        let channel_lookup = vec![ChannelInfo {
+            address_bytes: b"/test".to_vec(),
+            channel_index: 0,
+        }];
 
         let result = parser.fast_parse_single_message(&test_data, &channel_lookup);
         assert_eq!(result, Some((0, 1.5)));
     }
 
-    /// Helper function to create a simple OSC test client
     pub fn send_osc_message(target: &str, address: &str, value: f32) -> Result<()> {
         let socket = UdpSocket::bind("127.0.0.1:0")?;
 
-        // Simple OSC message construction
         let mut message = Vec::new();
 
-        // Address
         message.extend_from_slice(address.as_bytes());
         message.push(0); // null terminator
         while message.len() % 4 != 0 {
             message.push(0); // pad to 4-byte boundary
         }
 
-        // Type tag
         message.extend_from_slice(b",f");
         while message.len() % 4 != 0 {
             message.push(0);
         }
 
-        // Float argument
         message.extend_from_slice(&value.to_be_bytes());
 
         socket.send_to(&message, target)?;

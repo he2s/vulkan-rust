@@ -1,45 +1,45 @@
-mod config;
+// use statements
 use crate::config::config::{
-    Args, Config, WindowConfig, GraphicsConfig, AudioConfig, ShaderConfig,
-    ShaderPreset,
-    load_or_create_config, print_startup_info
+    Args, AudioConfig, Config, GraphicsConfig, ShaderConfig, ShaderPreset, WindowConfig,
+    load_or_create_config, print_startup_info,
 };
-use crate::input::midi::{MidiConfig, MidiStateSnapshot, MidiManager};
+use crate::input::midi::{MidiConfig, MidiManager, MidiStateSnapshot};
 use crate::input::osc::OscConfig;
 use crate::input::osc::OscManager;
 use crate::input::osc::OscStateSnapshot;
-use anyhow::{anyhow, Result};
-use ash::{vk, Entry};
+use anyhow::{Result, anyhow};
 use ash::khr::{surface, swapchain};
+use ash::{Entry, vk};
+use clap::Parser;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use midir::{Ignore, MidiInput};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use rustfft::{Fft, FftPlanner, num_complex::Complex32};
+use serde::{Deserialize, Serialize};
+use std::ffi::CStr;
 use std::{
-    ffi::{c_char, CString},
-    ptr,
-    time::{Duration, Instant},
-    sync::{Arc, Mutex},
-    path::Path,
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    ffi::{CString, c_char},
     fs,
-    collections::{VecDeque, HashMap},
-    cell::RefCell
+    path::Path,
+    ptr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use winit::{
     application::ApplicationHandler,
-    event::{WindowEvent, ElementState, MouseButton, KeyEvent},
+    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowAttributes, Fullscreen},
-    keyboard::{PhysicalKey, KeyCode},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Fullscreen, Window, WindowAttributes},
 };
-use midir::{MidiInput, Ignore};
-use clap::Parser;
-use serde::{Deserialize, Serialize};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use rustfft::{FftPlanner, num_complex::Complex32, Fft};
 //use std::arch::x86_64::*;
-use std::ffi::CStr;
 
+mod config;
 mod input;
 
-// Constants
+// constants
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
 const DEFAULT_TITLE: &str = "Vulkan MIDI Pixel Shader";
@@ -53,6 +53,7 @@ const DEFAULT_SAMPLE_RATE: u32 = 48000;
 const MAX_FFT_SIZE: usize = 2048;
 const MIN_FFT_SIZE: usize = 256;
 
+// device lister
 pub struct DeviceLister;
 
 impl DeviceLister {
@@ -88,7 +89,6 @@ impl DeviceLister {
         unsafe {
             let entry = ash::Entry::linked();
 
-            // Create a minimal instance just for enumeration
             let app_name = CString::new("device-lister")?;
             let app_info = vk::ApplicationInfo {
                 p_application_name: app_name.as_ptr(),
@@ -123,7 +123,6 @@ impl DeviceLister {
                     _ => "Other",
                 };
 
-                // Get memory info
                 let mem_props = instance.get_physical_device_memory_properties(device);
                 let mut total_vram = 0u64;
                 for i in 0..mem_props.memory_heap_count as usize {
@@ -134,7 +133,6 @@ impl DeviceLister {
                 }
                 let vram_gb = total_vram as f64 / (1024.0 * 1024.0 * 1024.0);
 
-                // Get Vulkan version
                 let major = vk::api_version_major(properties.api_version);
                 let minor = vk::api_version_minor(properties.api_version);
                 let patch = vk::api_version_patch(properties.api_version);
@@ -185,7 +183,6 @@ impl DeviceLister {
 
         let host = cpal::default_host();
 
-        // Show default device
         if let Some(device) = host.default_input_device() {
             match device.name() {
                 Ok(name) => println!("  [DEFAULT] {}", name),
@@ -193,7 +190,6 @@ impl DeviceLister {
             }
         }
 
-        // List all input devices
         match host.input_devices() {
             Ok(devices) => {
                 let devices: Vec<_> = devices.collect();
@@ -238,7 +234,6 @@ impl DeviceLister {
         println!("\n🎵 Audio Output Devices:");
         println!("----------------------");
 
-        // Show default output device
         if let Some(device) = host.default_output_device() {
             match device.name() {
                 Ok(name) => println!("  [DEFAULT] {}", name),
@@ -246,7 +241,6 @@ impl DeviceLister {
             }
         }
 
-        // List all output devices
         match host.output_devices() {
             Ok(devices) => {
                 let devices: Vec<_> = devices.collect();
@@ -269,39 +263,36 @@ impl DeviceLister {
     }
 }
 
-
-
-// ==================== Shader Management ====================
-
+// shader management
 pub struct ShaderSources {
     pub vertex: String,
     pub fragment: String,
 }
 
-// Helper: best-effort file read
 fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
 
 impl ShaderSources {
     pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
-        // If SHADER_PRESET_DIR is set, try loading live from disk first (dev mode).
         if let Ok(dir) = std::env::var("SHADER_PRESET_DIR") {
             let (vfile, ffile) = match preset {
-                ShaderPreset::Torus   => ("fullscreen.vert", "gradient.frag"),
-                ShaderPreset::Terrain => ("terrain.vert",   "terrain.frag"),
-                ShaderPreset::Crystal => ("crystal.vert",   "crystal.frag"),
-                ShaderPreset::Stars => ("stars.vert",   "stars.frag"),
-                ShaderPreset::Custom  => return Err(anyhow!("Custom shader requires paths")),
+                ShaderPreset::Torus => ("fullscreen.vert", "gradient.frag"),
+                ShaderPreset::Terrain => ("terrain.vert", "terrain.frag"),
+                ShaderPreset::Crystal => ("crystal.vert", "crystal.frag"),
+                ShaderPreset::Stars => ("stars.vert", "stars.frag"),
+                ShaderPreset::Custom => return Err(anyhow!("Custom shader requires paths")),
             };
             let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
             let fpath = std::path::Path::new(&dir).join("shaders").join(ffile);
             if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
-                return Ok(Self { vertex: vs, fragment: fs });
+                return Ok(Self {
+                    vertex: vs,
+                    fragment: fs,
+                });
             }
         }
 
-        // Fallback to embedded sources (release/default)
         match preset {
             ShaderPreset::Torus => Ok(Self {
                 vertex: include_str!("../shaders/fullscreen.vert").to_string(),
@@ -334,7 +325,9 @@ impl ShaderSources {
         if config.preset == ShaderPreset::Custom {
             match (&config.custom_vertex_path, &config.custom_fragment_path) {
                 (Some(vert), Some(frag)) => Self::load_from_files(vert, frag),
-                _ => Err(anyhow!("Custom shader preset requires both vertex and fragment paths")),
+                _ => Err(anyhow!(
+                    "Custom shader preset requires both vertex and fragment paths"
+                )),
             }
         } else {
             Self::load_preset(&config.preset)
@@ -342,14 +335,12 @@ impl ShaderSources {
     }
 }
 
-// ==================== Optimized State Management ====================
-
-// PERFORMANCE OPTIMIZATION #2: Frame state snapshot to reduce mutex lock frequency
+// state management
 #[derive(Clone, Debug)]
 pub struct FrameState {
     pub midi: MidiStateSnapshot,
     pub audio_levels: AudioLevels,
-    pub osc: OscStateSnapshot, // Changed from OscState
+    pub osc: OscStateSnapshot,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -371,25 +362,20 @@ impl Default for AudioLevels {
     }
 }
 
-// PERFORMANCE OPTIMIZATION #1 & #3: Cached FFT planner and pre-allocated buffers
-// OPTIMIZATION #1 & #3: Cached FFT planner and pre-allocated buffers
 pub struct AudioState {
     ring: VecDeque<f32>,
     capacity: usize,
     last_sample_rate: u32,
     pub levels: AudioLevels,
 
-    // OPTIMIZATION: Cached FFT components
     fft_planner: FftPlanner<f32>,
     fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>,
 
-    // OPTIMIZATION: Pre-allocated buffers to avoid runtime allocations
     processing_buffer: Vec<Complex32>,
     windowing_buffer: Vec<f32>,
     mono_conversion_buffer: Vec<f32>,
 }
 
-// Manual Debug implementation since FftPlanner doesn't implement Debug
 impl std::fmt::Debug for AudioState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioState")
@@ -398,9 +384,18 @@ impl std::fmt::Debug for AudioState {
             .field("last_sample_rate", &self.last_sample_rate)
             .field("levels", &self.levels)
             .field("fft_cache_size", &self.fft_cache.len())
-            .field("processing_buffer_capacity", &self.processing_buffer.capacity())
-            .field("windowing_buffer_capacity", &self.windowing_buffer.capacity())
-            .field("mono_conversion_buffer_capacity", &self.mono_conversion_buffer.capacity())
+            .field(
+                "processing_buffer_capacity",
+                &self.processing_buffer.capacity(),
+            )
+            .field(
+                "windowing_buffer_capacity",
+                &self.windowing_buffer.capacity(),
+            )
+            .field(
+                "mono_conversion_buffer_capacity",
+                &self.mono_conversion_buffer.capacity(),
+            )
             .finish()
     }
 }
@@ -413,11 +408,9 @@ impl AudioState {
             last_sample_rate: DEFAULT_SAMPLE_RATE,
             levels: AudioLevels::default(),
 
-            // Initialize cached components
             fft_planner: FftPlanner::<f32>::new(),
-            fft_cache: HashMap::with_capacity(8), // Cache common FFT sizes
+            fft_cache: HashMap::with_capacity(8),
 
-            // Pre-allocate buffers with generous capacity
             processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             mono_conversion_buffer: Vec::with_capacity(1024),
@@ -434,7 +427,6 @@ impl AudioState {
         }
     }
 
-    // OPTIMIZATION: Combine analysis and level extraction to reduce lock time
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
         if self.ring.is_empty() {
             self.levels = AudioLevels::default();
@@ -445,7 +437,8 @@ impl AudioState {
 
         // Reuse windowing buffer to avoid allocation
         self.windowing_buffer.clear();
-        self.windowing_buffer.extend(self.ring.iter().rev().take(take));
+        self.windowing_buffer
+            .extend(self.ring.iter().rev().take(take));
         self.windowing_buffer.reverse();
 
         // Calculate RMS
@@ -464,6 +457,7 @@ impl AudioState {
         let sum_squares: f32 = buffer.iter().map(|x| x * x).sum();
         (sum_squares / buffer.len() as f32).sqrt()
     }
+
     // #[target_feature(enable = "avx2")]
     // unsafe fn calculate_rms_simd(&self, buffer: &[f32]) -> f32 {
     //     let len = buffer.len();
@@ -491,23 +485,28 @@ impl AudioState {
     //     (result / len as f32).sqrt()
     // }
 
-    // OPTIMIZATION: Use cached FFT planner and reuse buffers
     fn perform_cached_fft_analysis(&mut self) -> (f32, f32, f32) {
-        let fft_len = self.windowing_buffer.len().next_power_of_two().max(MIN_FFT_SIZE).min(MAX_FFT_SIZE);
+        let fft_len = self
+            .windowing_buffer
+            .len()
+            .next_power_of_two()
+            .max(MIN_FFT_SIZE)
+            .min(MAX_FFT_SIZE);
         self.windowing_buffer.resize(fft_len, 0.0);
 
-        // Apply windowing function in-place (Hann with N-1)
         Self::apply_hann_window(&mut self.windowing_buffer);
 
-        // Get or create cached FFT (MAJOR OPTIMIZATION)
-        let fft = self.fft_cache.entry(fft_len).or_insert_with(|| {
-            self.fft_planner.plan_fft_forward(fft_len)
-        }).clone();
+        let fft = self
+            .fft_cache
+            .entry(fft_len)
+            .or_insert_with(|| self.fft_planner.plan_fft_forward(fft_len))
+            .clone();
 
-        // Reuse processing buffer
         self.processing_buffer.clear();
         self.processing_buffer.extend(
-            self.windowing_buffer.iter().map(|&v| Complex32::new(v, 0.0))
+            self.windowing_buffer
+                .iter()
+                .map(|&v| Complex32::new(v, 0.0)),
         );
 
         fft.process(&mut self.processing_buffer);
@@ -555,16 +554,20 @@ impl AudioState {
         const SMOOTHING_FACTOR: f32 = 0.7;
         let normalize = |x: f32| (x / 1000.0).min(1.0);
 
-        self.levels.level_rms = SMOOTHING_FACTOR * self.levels.level_rms + (1.0 - SMOOTHING_FACTOR) * rms.min(1.0);
-        self.levels.low = SMOOTHING_FACTOR * self.levels.low + (1.0 - SMOOTHING_FACTOR) * normalize(low);
-        self.levels.mid = SMOOTHING_FACTOR * self.levels.mid + (1.0 - SMOOTHING_FACTOR) * normalize(mid);
-        self.levels.high = SMOOTHING_FACTOR * self.levels.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
+        self.levels.level_rms =
+            SMOOTHING_FACTOR * self.levels.level_rms + (1.0 - SMOOTHING_FACTOR) * rms.min(1.0);
+        self.levels.low =
+            SMOOTHING_FACTOR * self.levels.low + (1.0 - SMOOTHING_FACTOR) * normalize(low);
+        self.levels.mid =
+            SMOOTHING_FACTOR * self.levels.mid + (1.0 - SMOOTHING_FACTOR) * normalize(mid);
+        self.levels.high =
+            SMOOTHING_FACTOR * self.levels.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
     }
 
-    // OPTIMIZATION: Pre-allocated buffer for mono conversion
     pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
         self.mono_conversion_buffer.clear();
-        self.mono_conversion_buffer.reserve(data.len() / channels + 1);
+        self.mono_conversion_buffer
+            .reserve(data.len() / channels + 1);
 
         for frame in data.chunks_exact(channels) {
             let sample = frame.iter().sum::<f32>() / channels as f32;
@@ -575,7 +578,7 @@ impl AudioState {
     }
 }
 
-// Push constants structure (must match shader layout)
+// push constants structure
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PushConstants {
@@ -595,8 +598,7 @@ struct PushConstants {
     render_h: u32,
 }
 
-// ==================== Vulkan Graphics ====================
-
+// vulkan graphics
 pub struct VulkanContext {
     _entry: Entry,
     instance: ash::Instance,
@@ -636,7 +638,6 @@ pub struct VulkanSync {
     in_flight: vk::Fence,
 }
 
-// OPTIMIZATION: Cache dynamic state to avoid redundant updates
 #[derive(Default)]
 pub struct VulkanState {
     current_extent: Option<vk::Extent2D>,
@@ -648,8 +649,8 @@ pub struct Gfx {
     pipeline: VulkanPipeline,
     commands: VulkanCommands,
     sync: VulkanSync,
-    state: VulkanState, // OPTIMIZATION: Track state to avoid redundant operations
-    vsync: bool,        // NEW: track vsync to recreate with same preference
+    state: VulkanState,
+    vsync: bool,
 }
 
 impl Gfx {
@@ -674,53 +675,50 @@ impl Gfx {
     pub unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<()> {
         self.context.device.device_wait_idle()?;
 
-        // Clean up old swapchain
         self.pipeline.cleanup_framebuffers(&self.context.device);
         self.swapchain.cleanup(&self.context.device);
 
-        // Create new swapchain (preserve vsync preference)
         self.swapchain = VulkanSwapchain::new(&self.context, window, self.vsync)?;
-        self.pipeline.recreate_framebuffers(&self.context.device, &self.swapchain)?;
+        self.pipeline
+            .recreate_framebuffers(&self.context.device, &self.swapchain)?;
 
-        // Reset cached state
         self.state.current_extent = None;
 
-        println!("Swapchain recreated: {}x{}", self.swapchain.extent.width, self.swapchain.extent.height);
+        println!(
+            "Swapchain recreated: {}x{}",
+            self.swapchain.extent.width, self.swapchain.extent.height
+        );
         Ok(())
     }
 
     pub unsafe fn recreate_pipeline(&mut self, shader_config: &ShaderConfig) -> Result<()> {
         self.context.device.device_wait_idle()?;
 
-        // Clean up old pipeline
         self.pipeline.cleanup_pipeline(&self.context.device);
 
-        // Create new pipeline
-        self.pipeline.create_pipeline(&self.context, &self.swapchain, shader_config)?;
+        self.pipeline
+            .create_pipeline(&self.context, &self.swapchain, shader_config)?;
 
         println!("Pipeline recreated successfully");
         Ok(())
     }
 
     pub unsafe fn draw(&mut self, push_constants: &PushConstants) -> Result<bool> {
-        // Wait for previous frame
-        self.context.device.wait_for_fences(&[self.sync.in_flight], true, u64::MAX)?;
+        self.context
+            .device
+            .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)?;
         self.context.device.reset_fences(&[self.sync.in_flight])?;
 
-        // Acquire next image
         let (image_index, needs_recreation) = self.acquire_next_image()?;
         if needs_recreation {
             return Ok(true);
         }
 
-        // Record command buffer
         let cmd_buffer = self.commands.get_current_buffer();
         self.record_command_buffer(cmd_buffer, image_index, push_constants)?;
 
-        // Submit command buffer
         self.submit_commands(cmd_buffer)?;
 
-        // Present
         self.present_image(image_index)
     }
 
@@ -743,16 +741,18 @@ impl Gfx {
         image_index: u32,
         push_constants: &PushConstants,
     ) -> Result<()> {
-        // RESET before re-recording (pool has RESET_COMMAND_BUFFER flag)
-        self.context.device.reset_command_buffer(
-            cmd_buffer,
-            vk::CommandBufferResetFlags::empty()
-        )?;
+        self.context
+            .device
+            .reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())?;
 
-        self.context.device.begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())?;
+        self.context
+            .device
+            .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())?;
 
         let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] }
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
         }];
 
         let render_area = vk::Rect2D {
@@ -769,10 +769,17 @@ impl Gfx {
             ..Default::default()
         };
 
-        self.context.device.cmd_begin_render_pass(cmd_buffer, &render_pass_begin, vk::SubpassContents::INLINE);
-        self.context.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.pipeline);
+        self.context.device.cmd_begin_render_pass(
+            cmd_buffer,
+            &render_pass_begin,
+            vk::SubpassContents::INLINE,
+        );
+        self.context.device.cmd_bind_pipeline(
+            cmd_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline.pipeline,
+        );
 
-        // Always set dynamic state once per command buffer
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -781,10 +788,13 @@ impl Gfx {
             min_depth: 0.0,
             max_depth: 1.0,
         };
-        self.context.device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
-        self.context.device.cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+        self.context
+            .device
+            .cmd_set_viewport(cmd_buffer, 0, &[viewport]);
+        self.context
+            .device
+            .cmd_set_scissor(cmd_buffer, 0, &[render_area]);
 
-        // Push constants
         self.context.device.cmd_push_constants(
             cmd_buffer,
             self.pipeline.pipeline_layout,
@@ -792,8 +802,8 @@ impl Gfx {
             0,
             std::slice::from_raw_parts(
                 push_constants as *const PushConstants as *const u8,
-                std::mem::size_of::<PushConstants>()
-            )
+                std::mem::size_of::<PushConstants>(),
+            ),
         );
 
         self.context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
@@ -820,7 +830,11 @@ impl Gfx {
             ..Default::default()
         };
 
-        self.context.device.queue_submit(self.context.queue, &[submit_info], self.sync.in_flight)?;
+        self.context.device.queue_submit(
+            self.context.queue,
+            &[submit_info],
+            self.sync.in_flight,
+        )?;
         Ok(())
     }
 
@@ -838,7 +852,11 @@ impl Gfx {
             ..Default::default()
         };
 
-        match self.swapchain.loader.queue_present(self.context.queue, &present_info) {
+        match self
+            .swapchain
+            .loader
+            .queue_present(self.context.queue, &present_info)
+        {
             Ok(_) => Ok(false),
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => Ok(true),
             Err(e) => Err(anyhow!("Failed to present: {:?}", e)),
@@ -846,19 +864,22 @@ impl Gfx {
     }
 }
 
-// Implement VulkanContext
 impl VulkanContext {
     unsafe fn new(window: &Window) -> Result<Self> {
         let entry = Entry::linked();
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
-        let required_extensions = ash_window::enumerate_required_extensions(display_handle)?.to_vec();
+        let required_extensions =
+            ash_window::enumerate_required_extensions(display_handle)?.to_vec();
 
         let instance = Self::create_instance(&entry, &required_extensions)?;
-        let surface = ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)?;
+        let surface =
+            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)?;
         let surface_loader = surface::Instance::new(&entry, &instance);
-        let (physical_device, queue_family_index) = Self::select_physical_device(&instance, &surface_loader, surface)?;
-        let (device, queue) = Self::create_logical_device(&instance, physical_device, queue_family_index)?;
+        let (physical_device, queue_family_index) =
+            Self::select_physical_device(&instance, &surface_loader, surface)?;
+        let (device, queue) =
+            Self::create_logical_device(&instance, physical_device, queue_family_index)?;
 
         Ok(Self {
             _entry: entry,
@@ -872,7 +893,10 @@ impl VulkanContext {
         })
     }
 
-    unsafe fn create_instance(entry: &Entry, required_extensions: &[*const c_char]) -> Result<ash::Instance> {
+    unsafe fn create_instance(
+        entry: &Entry,
+        required_extensions: &[*const c_char],
+    ) -> Result<ash::Instance> {
         let app_name = CString::new("vulkan-pixel-shader")?;
 
         let layer_names: Vec<CString> = if cfg!(debug_assertions) {
@@ -881,10 +905,8 @@ impl VulkanContext {
             vec![]
         };
 
-        let layer_name_pointers: Vec<*const c_char> = layer_names
-            .iter()
-            .map(|name| name.as_ptr())
-            .collect();
+        let layer_name_pointers: Vec<*const c_char> =
+            layer_names.iter().map(|name| name.as_ptr()).collect();
 
         let app_info = vk::ApplicationInfo {
             p_application_name: app_name.as_ptr(),
@@ -920,8 +942,9 @@ impl VulkanContext {
             for (index, queue_family) in queue_families.iter().enumerate() {
                 let index = index as u32;
 
-                if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) &&
-                    surface_loader.get_physical_device_surface_support(device, index, surface)? {
+                if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                    && surface_loader.get_physical_device_surface_support(device, index, surface)?
+                {
                     return Ok((device, index));
                 }
             }
@@ -959,18 +982,15 @@ impl VulkanContext {
     }
 }
 
-// Implement VulkanSwapchain
 impl VulkanSwapchain {
     unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);
-        let surface_caps = context.surface_loader.get_physical_device_surface_capabilities(
-            context.physical_device,
-            context.surface,
-        )?;
-        let formats = context.surface_loader.get_physical_device_surface_formats(
-            context.physical_device,
-            context.surface,
-        )?;
+        let surface_caps = context
+            .surface_loader
+            .get_physical_device_surface_capabilities(context.physical_device, context.surface)?;
+        let formats = context
+            .surface_loader
+            .get_physical_device_surface_formats(context.physical_device, context.surface)?;
 
         let chosen = Self::choose_surface_format(&formats);
         let format = chosen.format;
@@ -1011,7 +1031,10 @@ impl VulkanSwapchain {
     fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
         formats
             .iter()
-            .find(|f| f.format == vk::Format::B8G8R8A8_SRGB && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+            .find(|f| {
+                f.format == vk::Format::B8G8R8A8_SRGB
+                    && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+            })
             .copied()
             .unwrap_or_else(|| formats[0])
     }
@@ -1089,7 +1112,6 @@ impl VulkanSwapchain {
     }
 }
 
-// Implement VulkanPipeline
 impl VulkanPipeline {
     unsafe fn new(
         context: &VulkanContext,
@@ -1098,7 +1120,13 @@ impl VulkanPipeline {
     ) -> Result<Self> {
         let render_pass = Self::create_render_pass(&context.device, swapchain.format)?;
         let pipeline_layout = Self::create_pipeline_layout(&context.device)?;
-        let pipeline = Self::create_graphics_pipeline(&context.device, render_pass, pipeline_layout, swapchain, shader_config)?;
+        let pipeline = Self::create_graphics_pipeline(
+            &context.device,
+            render_pass,
+            pipeline_layout,
+            swapchain,
+            shader_config,
+        )?;
         let framebuffers = Self::create_framebuffers(&context.device, render_pass, swapchain)?;
 
         Ok(Self {
@@ -1109,7 +1137,10 @@ impl VulkanPipeline {
         })
     }
 
-    unsafe fn create_render_pass(device: &ash::Device, format: vk::Format) -> Result<vk::RenderPass> {
+    unsafe fn create_render_pass(
+        device: &ash::Device,
+        format: vk::Format,
+    ) -> Result<vk::RenderPass> {
         let color_attachment = vk::AttachmentDescription {
             format,
             samples: vk::SampleCountFlags::TYPE_1,
@@ -1174,7 +1205,8 @@ impl VulkanPipeline {
 
         println!("Compiling shaders...");
         let vert_code = Self::compile_shader(&shader_sources.vertex, shaderc::ShaderKind::Vertex)?;
-        let frag_code = Self::compile_shader(&shader_sources.fragment, shaderc::ShaderKind::Fragment)?;
+        let frag_code =
+            Self::compile_shader(&shader_sources.fragment, shaderc::ShaderKind::Fragment)?;
 
         let vert_module = Self::create_shader_module(device, &vert_code)?;
         let frag_module = Self::create_shader_module(device, &frag_code)?;
@@ -1258,7 +1290,6 @@ impl VulkanPipeline {
             .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
             .map_err(|e| e.1)?;
 
-        // Clean up shader modules
         device.destroy_shader_module(vert_module, None);
         device.destroy_shader_module(frag_module, None);
 
@@ -1266,8 +1297,8 @@ impl VulkanPipeline {
     }
 
     unsafe fn compile_shader(source: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>> {
-        let compiler = shaderc::Compiler::new()
-            .ok_or_else(|| anyhow!("Failed to create shader compiler"))?;
+        let compiler =
+            shaderc::Compiler::new().ok_or_else(|| anyhow!("Failed to create shader compiler"))?;
 
         let result = compiler
             .compile_into_spirv(source, kind, "shader", "main", None)
@@ -1309,17 +1340,18 @@ impl VulkanPipeline {
             .map_err(Into::into)
     }
 
-    unsafe fn create_pipeline(&mut self,
-                              context: &VulkanContext,
-                              swapchain: &VulkanSwapchain,
-                              shader_config: &ShaderConfig
+    unsafe fn create_pipeline(
+        &mut self,
+        context: &VulkanContext,
+        swapchain: &VulkanSwapchain,
+        shader_config: &ShaderConfig,
     ) -> Result<()> {
         self.pipeline = Self::create_graphics_pipeline(
             &context.device,
             self.render_pass,
             self.pipeline_layout,
             swapchain,
-            shader_config
+            shader_config,
         )?;
         Ok(())
     }
@@ -1345,7 +1377,6 @@ impl VulkanPipeline {
     }
 }
 
-// Implement VulkanCommands
 impl VulkanCommands {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let pool_info = vk::CommandPoolCreateInfo {
@@ -1380,7 +1411,6 @@ impl VulkanCommands {
     }
 }
 
-// Implement VulkanSync
 impl VulkanSync {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -1397,40 +1427,47 @@ impl VulkanSync {
     }
 }
 
-// Cleanup implementations
 impl Drop for Gfx {
     fn drop(&mut self) {
         unsafe {
             let _ = self.context.device.device_wait_idle();
 
-            // Clean up sync objects
             self.context.device.destroy_fence(self.sync.in_flight, None);
-            self.context.device.destroy_semaphore(self.sync.render_finished, None);
-            self.context.device.destroy_semaphore(self.sync.image_available, None);
+            self.context
+                .device
+                .destroy_semaphore(self.sync.render_finished, None);
+            self.context
+                .device
+                .destroy_semaphore(self.sync.image_available, None);
 
-            // Clean up commands
-            self.context.device.free_command_buffers(self.commands.pool, &self.commands.buffers);
-            self.context.device.destroy_command_pool(self.commands.pool, None);
+            self.context
+                .device
+                .free_command_buffers(self.commands.pool, &self.commands.buffers);
+            self.context
+                .device
+                .destroy_command_pool(self.commands.pool, None);
 
-            // Clean up pipeline
             self.pipeline.cleanup_framebuffers(&self.context.device);
             self.pipeline.cleanup_pipeline(&self.context.device);
-            self.context.device.destroy_pipeline_layout(self.pipeline.pipeline_layout, None);
-            self.context.device.destroy_render_pass(self.pipeline.render_pass, None);
+            self.context
+                .device
+                .destroy_pipeline_layout(self.pipeline.pipeline_layout, None);
+            self.context
+                .device
+                .destroy_render_pass(self.pipeline.render_pass, None);
 
-            // Clean up swapchain
             self.swapchain.cleanup(&self.context.device);
 
-            // Clean up context
-            self.context.surface_loader.destroy_surface(self.context.surface, None);
+            self.context
+                .surface_loader
+                .destroy_surface(self.context.surface, None);
             self.context.device.destroy_device(None);
             self.context.instance.destroy_instance(None);
         }
     }
 }
 
-// ==================== Optimized Input Handling ====================
-
+// input management
 pub struct InputManager {
     midi_manager: MidiManager,
     audio_state: Arc<Mutex<AudioState>>,
@@ -1464,21 +1501,20 @@ impl InputManager {
         }
     }
 
-    // OPTIMIZATION #2: Single function to get all frame state with minimal lock time
     pub fn get_frame_state(&self) -> FrameState {
-        // Get MIDI state (quick clone)
         let midi = self.midi_manager.get_state_snapshot();
-        //let midi_state = self.midi_manager.get_state();
 
-        // Get audio levels and perform analysis in one lock acquisition
         let audio_levels = {
             let mut audio_state = self.audio_state.lock().unwrap();
             audio_state.analyze_and_get_levels()
         };
         let osc = self.osc_manager.get_state(); // Returns OscStateSnapshot
-        FrameState { midi, audio_levels, osc }
+        FrameState {
+            midi,
+            audio_levels,
+            osc,
+        }
     }
-
 
     pub fn setup_audio(&mut self, config: &AudioConfig) {
         if !config.enabled {
@@ -1501,14 +1537,22 @@ impl InputManager {
         }
     }
 
-
-    fn try_setup_audio(&self, config: &AudioConfig) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
+    fn try_setup_audio(
+        &self,
+        config: &AudioConfig,
+    ) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
         let host = cpal::default_host();
         let device = self.select_audio_device(&host, config)?;
         let audio_config = self.configure_audio_device(&device, config)?;
 
-        println!("Using audio device: {}", device.name().unwrap_or_else(|_| "Unknown".into()));
-        println!("Audio config: {:?}Hz, {:?}ch", audio_config.sample_rate.0, audio_config.channels);
+        println!(
+            "Using audio device: {}",
+            device.name().unwrap_or_else(|_| "Unknown".into())
+        );
+        println!(
+            "Audio config: {:?}Hz, {:?}ch",
+            audio_config.sample_rate.0, audio_config.channels
+        );
 
         let audio_state = Arc::clone(&self.audio_state);
         let channels = audio_config.channels as usize;
@@ -1516,9 +1560,7 @@ impl InputManager {
         let stream = device.build_input_stream(
             &audio_config,
             move |data: &[f32], _| {
-                // OPTIMIZATION: Minimize lock time by doing conversion outside the lock
                 if let Ok(mut state) = audio_state.try_lock() {
-                    // Convert to mono and clone to avoid borrow conflicts
                     let mono_samples = state.convert_to_mono_optimized(data, channels).to_vec();
                     state.push_samples(&mono_samples, audio_config.sample_rate.0);
                 }
@@ -1540,7 +1582,8 @@ impl InputManager {
         let device = if let Some(ref device_name) = config.device_name {
             host.input_devices()?
                 .find(|device| {
-                    device.name()
+                    device
+                        .name()
                         .map_or(false, |name| name.contains(device_name))
                 })
                 .or_else(|| host.default_input_device())
@@ -1563,12 +1606,12 @@ impl InputManager {
 
         let mut stream_config = supported_configs[0].with_max_sample_rate().config();
 
-        // Try to find a better configuration
         for supported_config in &supported_configs {
             if supported_config.sample_format() == cpal::SampleFormat::F32 {
                 if let Some(desired_rate) = config.sample_rate {
-                    if supported_config.min_sample_rate().0 <= desired_rate &&
-                        desired_rate <= supported_config.max_sample_rate().0 {
+                    if supported_config.min_sample_rate().0 <= desired_rate
+                        && desired_rate <= supported_config.max_sample_rate().0
+                    {
                         stream_config = supported_config
                             .clone()
                             .with_sample_rate(cpal::SampleRate(desired_rate))
@@ -1584,11 +1627,9 @@ impl InputManager {
 
         Ok(stream_config)
     }
-
 }
 
-// ==================== Main Application ====================
-
+// main app
 pub struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
@@ -1600,11 +1641,9 @@ pub struct App {
     is_fullscreen: bool,
     current_shader_index: usize,
     shader_presets: Vec<ShaderPreset>,
-    // FPS tracking fields
     frame_times: VecDeque<Instant>,
     last_fps_log: Instant,
     frame_count: u64,
-    // FPS tracking fields
     frame_count_since_log: u32,
 }
 
@@ -1635,11 +1674,9 @@ impl App {
             shader_presets,
             config,
 
-            // Initialize FPS tracking
             frame_times: VecDeque::with_capacity(1000), // Store up to 1000 recent frame times
             last_fps_log: now,
             frame_count: 0,
-            // FPS tracking fields
             frame_count_since_log: 0,
         }
     }
@@ -1648,15 +1685,18 @@ impl App {
     fn update_fps_tracking(&mut self) {
         self.frame_count_since_log += 1;
 
-        // Check if 10 seconds have passed (only do this check, no Duration creation)
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_fps_log);
 
         if elapsed.as_secs() >= 10 {
             let fps = self.frame_count_since_log as f64 / elapsed.as_secs_f64();
 
-            println!("Average FPS: {:.1} ({} frames in {:.1}s)",
-                     fps, self.frame_count_since_log, elapsed.as_secs_f64());
+            println!(
+                "Average FPS: {:.1} ({} frames in {:.1}s)",
+                fps,
+                self.frame_count_since_log,
+                elapsed.as_secs_f64()
+            );
 
             self.last_fps_log = now;
             self.frame_count_since_log = 0;
@@ -1674,7 +1714,10 @@ impl App {
             };
 
             window.set_fullscreen(fullscreen);
-            println!("Toggled fullscreen: {}", if self.is_fullscreen { "ON" } else { "OFF" });
+            println!(
+                "Toggled fullscreen: {}",
+                if self.is_fullscreen { "ON" } else { "OFF" }
+            );
         }
     }
 
@@ -1711,7 +1754,6 @@ impl App {
         }
     }
 
-    // OPTIMIZATION: Use frame state snapshot instead of multiple locks
     fn get_push_constants(&self, elapsed: f32, w: u32, h: u32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
 
@@ -1722,9 +1764,11 @@ impl App {
             0.0
         };
 
-        // Blend MIDI and audio data
         let blended_velocity = note_velocity.max(frame_state.audio_levels.level_rms);
-        let blended_pitch_bend = frame_state.midi.pitch_bend.max(frame_state.audio_levels.low * 2.0 - 1.0);
+        let blended_pitch_bend = frame_state
+            .midi
+            .pitch_bend
+            .max(frame_state.audio_levels.low * 2.0 - 1.0);
         let blended_cc1 = frame_state.midi.controllers[1].max(frame_state.audio_levels.mid);
         let blended_cc74 = frame_state.midi.controllers[74].max(frame_state.audio_levels.high);
 
@@ -1739,8 +1783,8 @@ impl App {
             cc74: blended_cc74,
             note_count: frame_state.midi.note_count,
             last_note: frame_state.midi.last_note as u32,
-            osc_ch1: frame_state.osc.channel1,  // Add this
-            osc_ch2: frame_state.osc.channel2,  // Add this
+            osc_ch1: frame_state.osc.channel1, // Add this
+            osc_ch2: frame_state.osc.channel2, // Add this
             render_w: w,
             render_h: h,
         }
@@ -1777,9 +1821,12 @@ impl ApplicationHandler for App {
             ));
         }
 
-        let window = event_loop.create_window(attributes).expect("Failed to create window");
+        let window = event_loop
+            .create_window(attributes)
+            .expect("Failed to create window");
         let gfx = unsafe {
-            Gfx::new(&window, &self.config.shader, self.config.graphics.vsync).expect("Failed to initialize Vulkan")
+            Gfx::new(&window, &self.config.shader, self.config.graphics.vsync)
+                .expect("Failed to initialize Vulkan")
         };
 
         self.window = Some(window);
@@ -1815,33 +1862,36 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
-            } => {
-                match physical_key {
-                    PhysicalKey::Code(KeyCode::F11) => self.toggle_fullscreen(),
-                    PhysicalKey::Code(KeyCode::Escape) => {
-                        if self.is_fullscreen {
-                            self.toggle_fullscreen();
-                        } else {
-                            event_loop.exit();
-                        }
+            } => match physical_key {
+                PhysicalKey::Code(KeyCode::F11) => self.toggle_fullscreen(),
+                PhysicalKey::Code(KeyCode::Escape) => {
+                    if self.is_fullscreen {
+                        self.toggle_fullscreen();
+                    } else {
+                        event_loop.exit();
                     }
-                    PhysicalKey::Code(KeyCode::Tab) => self.cycle_shader(),
-                    PhysicalKey::Code(KeyCode::F5) => self.reload_shaders(),
-                    _ => {}
                 }
-            }
+                PhysicalKey::Code(KeyCode::Tab) => self.cycle_shader(),
+                PhysicalKey::Code(KeyCode::F5) => self.reload_shaders(),
+                _ => {}
+            },
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
             }
 
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.mouse_pressed = state == ElementState::Pressed;
             }
 
@@ -1850,7 +1900,8 @@ impl ApplicationHandler for App {
                 if let (Some(start_time), Some(window)) = (&self.start_time, &self.window) {
                     let elapsed = start_time.elapsed().as_secs_f32();
                     let size = window.inner_size();
-                    let push_constants = self.get_push_constants(elapsed, size.width.max(1), size.height.max(1));
+                    let push_constants =
+                        self.get_push_constants(elapsed, size.width.max(1), size.height.max(1));
 
                     if let Some(gfx) = &mut self.gfx {
                         match unsafe { gfx.draw(&push_constants) } {
@@ -1891,14 +1942,12 @@ impl ApplicationHandler for App {
     }
 }
 
-// ==================== Main Entry Point ====================
-
+// main
 fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
 
-    // Handle device listing
     if args.list_devices {
         DeviceLister::list_all_devices();
         return Ok(());
@@ -1910,7 +1959,11 @@ fn main() -> Result<()> {
     print_startup_info(&config);
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
-    let frame_time = if config.graphics.vsync { FRAME_TIME_VSYNC } else { FRAME_TIME_NO_VSYNC };
+    let frame_time = if config.graphics.vsync {
+        FRAME_TIME_VSYNC
+    } else {
+        FRAME_TIME_NO_VSYNC
+    };
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + frame_time));
 
     let mut app = App::new(config);
