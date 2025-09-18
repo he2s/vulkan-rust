@@ -51,13 +51,13 @@ const fn default_osc_port() -> u16 {
     7000
 }
 fn default_osc_address() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 fn default_channel1_path() -> String {
-    "/FX1_L".to_string()
+    "/1/fader1".to_string()
 }
 fn default_channel2_path() -> String {
-    "/ch2".to_string()
+    "/1/fader2".to_string()
 }
 const fn default_smoothing() -> f32 {
     0.1
@@ -227,10 +227,13 @@ impl OscManager {
         while !should_stop.load(Ordering::Relaxed) {
             match socket.recv(&mut buffer) {
                 Ok(size) => {
+                    println!("{:?}", 1);
                     if size > 0 && !buffer[..8.min(size)].starts_with(OSC_BUNDLE_TAG) {
+                        println!("{:?}", 2);
                         if let Some((channel_idx, value)) =
                             parser.fast_parse_single_message(&buffer[..size], &channel_lookup)
                         {
+                            println!("{:?}", 3);
                             match channel_idx {
                                 0 => {
                                     let current = state.get_channel1();
@@ -239,6 +242,7 @@ impl OscManager {
                                     } else {
                                         current * smoothing + value * inv_smoothing
                                     };
+                                    println!("{:?}", new_value);
                                     state.set_channel1(new_value);
                                 }
                                 1 => {
@@ -264,6 +268,7 @@ impl OscManager {
                     }
                 }
                 Err(e) => {
+                    //println!("{:?}", e);
                     if e.kind() != std::io::ErrorKind::TimedOut
                         && e.kind() != std::io::ErrorKind::WouldBlock
                     {

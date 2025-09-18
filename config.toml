@@ -26,5 +26,5 @@ allow_runtime_switching = true
 
 [osc]
 enabled = true
-port = 8001
+port = 7001
 address = "0.0.0.0"  #
