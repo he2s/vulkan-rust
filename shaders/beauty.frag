@@ -28,7 +28,7 @@ layout(location = 0) out vec4 outColor;
 #define PI 3.141592653589793238
 #define TAU (2.0 * PI)
 #define EPSILON 0.01
-#define MAX_STEPS 28
+#define MAX_STEPS 128
 #define MAX_DIST 120.0
 
 // Helper macros
