@@ -25,412 +25,222 @@ layout(location = 2) in vec3 worldPos;
 layout(location = 0) out vec4 outColor;
 
 // Constants
-#define PI 3.14159265359
-#define PHI 1.618033988749895
-#define TAU 6.283185307179586
-#define MAX_TRACE_DISTANCE 30.0
-#define INTERSECTION_PRECISION 0.001
-#define NUM_OF_TRACE_STEPS 100
-#define FUDGE_FACTOR 0.5
-#define ENABLE_CHAMFER
+#define PI 3.141592653589793238
+#define TAU (2.0 * PI)
+#define EPSILON 0.01
+#define MAX_STEPS 128
+#define MAX_DIST 120.0
 
-// Audio-reactive chamfer amount
-float getChamfer() {
-    return 0.003 + pc.cc1 * 0.005;
+// Helper macros
+#define min2(a, b) ((a.x < b.x) ? a : b)
+#define pos(x) (x * 0.5 + 0.5)
+#define sat(x) clamp(x, 0.0, 1.0)
+
+// Rotation matrix
+mat2 rot(float a) {
+    float c = cos(a);
+    float s = sin(a);
+    return mat2(c, -s, s, c);
 }
 
-// Plane with normal n at some distance from the origin
-float fPlane(vec3 p, vec3 n, float distanceFromOrigin) {
-    return dot(p, n) + distanceFromOrigin;
+// Audio-reactive color palette
+vec3 palette(float x) {
+    // Shift palette based on note count
+    x += float(pc.note_count % 8u) * 0.125;
+
+    // Audio-reactive palette parameters
+    vec3 a = vec3(0.5, 0.5, 0.0); // Base color (fire)
+    vec3 b = vec3(0.5 + pc.cc74 * 0.3); // Amplitude
+    vec3 c = vec3(0.1, 0.5, 0.0) + vec3(pc.osc_ch1, pc.osc_ch2, 0.0) * 0.3;
+    vec3 d = vec3(0.0, pc.pitch_bend * 0.3, pc.note_velocity * 0.2);
+
+    return a + b * cos(TAU * (c * x + d));
 }
 
-// Rotation
-void pR(inout vec2 p, float a) {
-    p = cos(a)*p + sin(a)*vec2(p.y, -p.x);
+// Smooth union with audio-reactive smoothness
+float smooth_union(float a, float b, float k) {
+    float h = sat(pos((b - a) / k));
+    return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// Repeat around the origin by a fixed angle
-float pModPolar(inout vec2 p, float repetitions) {
-    float angle = 2.*PI/repetitions;
-    float a = atan(p.y, p.x) + angle/2.;
-    float r = length(p);
-    float c = floor(a/angle);
-    a = mod(a,angle) - angle/2.;
-    p = vec2(cos(a), sin(a))*r;
-    if (abs(c) >= (repetitions/2.)) c = abs(c);
-    return c;
+// Torus SDF
+float sdf_torus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
 }
 
-// Intersection with chamfer
-float fOpIntersectionChamfer(float a, float b, float r) {
-    float m = max(a, b);
-    if (r <= 0.) return m;
-    if (((-a < r) && (-b < r)) || (m < 0.)) {
-        return max(m, (a + r + b)*sqrt(0.5));
-    } else {
-        return m;
-    }
-}
+// Global glow accumulator
+vec3 glow;
 
-// Orient matrix
-mat3 orientMatrix(vec3 A, vec3 B) {
-    mat3 Fi = mat3(
-    A,
-    (B - dot(A, B) * A) / length(B - dot(A, B) * A),
-    cross(B, A)
-    );
-    mat3 G = mat3(
-    dot(A, B),              -length(cross(A, B)),   0,
-    length(cross(A, B)),    dot(A, B),              0,
-    0,                      0,                      1
-    );
-    return Fi * G * inverse(Fi);
-}
+// Main SDF scene
+vec2 sdf(vec3 p) {
+    vec2 di = vec2(120.0, -1.0);
 
-// Audio-reactive color palette with inner glow
-vec3 spectrum(float n) {
-    // Base spectrum influenced by audio
-    float energy = clamp(pc.note_velocity, 0.0, 1.0);
-    float brightness = clamp(pc.cc74, 0.0, 1.0);
-
-    // Shift hue based on note count
-    n += float(pc.note_count % 12u) * 0.08;
-
-    // More dramatic color shifts
-    vec3 a = vec3(0.5 + energy * 0.2);
-    vec3 b = vec3(0.5 + brightness * 0.3);
-    vec3 c = vec3(1.0, 0.7, 0.4);
-    vec3 d = vec3(0.0 + pc.time * 0.01, 0.33, 0.67);
-
-    // Modify palette with OSC
-    d.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.3;
-
-    vec3 color = a + b * cos(TAU * (c * n + d));
-
-    // Energy affects saturation
-    float sat = 0.5 + energy * 0.5;
-    vec3 gray = vec3(dot(color, vec3(0.299, 0.587, 0.114)));
-    color = mix(gray, color, sat);
-
-    // Inner glow based on energy
-    vec3 glowColor = vec3(0.3, 0.6, 1.0) * energy;
-    color += glowColor * 0.3;
-
-    // Brightness control
-    color *= 0.7 + brightness * 0.5;
-
-    return color;
-}
-
-// Model structure
-struct Model {
-    float dist;
-    vec3 colour;
-    float id;
-};
-
-float quadrant(float a, float b) {
-    return ((sign(a) + sign(b) * 2.) + 3.) / 2.;
-}
-
-// Nearest icosahedron vertex
-vec4 icosahedronVertex(vec3 p) {
-    vec3 v1, v2, v3, result, plane;
-    float id;
-    v1 = vec3(
-    sign(p.x) * PHI,
-    sign(p.y) * 1.,
-    0
-    );
-    v2 = vec3(
-    sign(p.x) * 1.,
-    0,
-    sign(p.z) * PHI
-    );
-    v3 = vec3(
-    0,
-    sign(p.y) * PHI,
-    sign(p.z) * 1.
-    );
-    plane = normalize(cross(
-    mix(v1, v2, .5),
-    cross(v1, v2)
-    ));
-    if (dot(p, plane) > 0.) {
-        result = v1;
-        id = quadrant(p.y, p.x);
-    } else {
-        result = v2;
-        id = quadrant(p.x, p.z) + 4.;
-    }
-    plane = normalize(cross(
-    mix(v3, result, .5),
-    cross(v3, result)
-    ));
-    if (dot(p, plane) > 0.) {
-        result = v3;
-        id = quadrant(p.z, p.y) + 8.;
-    }
-    return vec4(normalize(result), id);
-}
-
-vec3 rand(vec3 seed){
-    return fract(mod(seed, 1.) * 43758.5453);
-}
-
-vec3 jitterOffset(float seed) {
-    return normalize(rand(vec3(seed, seed + .2, seed + .8)) - .5);
-}
-
-vec3 jitterVec(vec3 v, float seed, float magnitude) {
-    return normalize(v + jitterOffset(seed) * magnitude);
-}
-
-float alias(float t, float resolution) {
-    return floor(t * resolution) / resolution;
-}
-
-float fCrystalShard(vec3 p, float size) {
-    float d;
-    // Breathing effect on width
-    float breathe = sin(pc.time * 3.0 + pc.note_velocity * TAU) * 0.02;
-    float width = size * .04 + .07 + breathe;
-    vec3 o = normalize(vec3(1,0,-.04));
-
-    // Audio-reactive number of sides with smoother transition
-    float sides = 5.0 + floor(pc.cc1 * 3.0);
-    // Add twist based on height
-    pR(p.xy, p.z * pc.pitch_bend * 0.3);
-    pModPolar(p.xy, sides);
-
-    float part1, part2;
-    p.y = abs(p.y);
-    part1 = fPlane(p, vec3(1,0,-.04), -width);
-
-    pR(p.xy, TAU/sides);
-    part2 = fPlane(p, vec3(1,0,-.04), -width);
-
-    d = fOpIntersectionChamfer(part1, part2, getChamfer());
-
-    return d;
-}
-
-float fCrystalCap(vec3 p, float id, float side) {
-    float jitter = id + side * .1;
-    vec3 o = normalize(vec3(1,0,.55));
-    float angle = TAU / 3.;
-    float d, part;
-
-    // Audio affects jitter magnitude
-    float jitterMag = 0.1 * (1.0 + pc.pitch_bend * 0.5);
-
-    d = fPlane(p, jitterVec(o, jitter + .3, jitterMag), 0.);
-
-    pR(p.xy, angle);
-    part = fPlane(p, jitterVec(o, jitter + .5, jitterMag), 0.);
-    d = fOpIntersectionChamfer(d, part, getChamfer());
-
-    pR(p.xy, angle);
-    part = fPlane(p, jitterVec(o, jitter + .9, jitterMag), 0.);
-    d = fOpIntersectionChamfer(d, part, getChamfer());
-
-    return d;
-}
-
-float fCrystal(vec3 p, float id, float focus) {
-    // Audio-reactive sizing
+    // Audio-reactive parameters
     float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
 
-    float size = sin(pc.time * TAU * 4. + focus * 5. + id + energy * PI) * .5 + .5;
-    float size2 = cos(pc.time * TAU * 2. + focus * 5. + id + modulation * PI) * .5 + .5;
+    // Audio-reactive smoothness
+    float smoothness = 0.2 + modulation * 0.4;
 
-    size = alias(size, 2.);
-    size2 = alias(size2, 2.);
+    // Time with audio modulation
+    float t = pc.time * (0.5 + energy * 1.0);
 
-    float height = size2 * .1 + .35 + vertexEnergy * 0.1;
-    float offset = .9;
-    float d;
+    // Audio-reactive torus size
+    float ringRadius = 1.0 + vertexEnergy * 0.2;
+    float ringThickness = 0.15 + energy * 0.05;
+    vec2 torusParams = vec2(ringRadius, ringThickness);
 
-    float shard = fCrystalShard(p, size);
+    // First ring with audio rotation
+    vec3 p1 = p;
+    p1.yz *= rot(t + pc.pitch_bend);
+    p1.xy *= rot(t * 1.2);
+    p1.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    float ring_1 = sdf_torus(p1, torusParams);
 
-    p.z -= offset;
-    float side = sign(p.z) * .5 + .5;
-    p.z = abs(p.z);
-    p.z -= height;
+    // Second ring
+    vec3 p2 = p;
+    p2.yz *= rot(t + pc.pitch_bend);
+    p2.xy *= rot(t * 1.2);
+    p2.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    p2.yz *= rot(t * PI / 2.0 + PI / 5.0 + pc.osc_ch1 * PI);
+    float ring_2 = sdf_torus(p2, torusParams * (1.0 + modulation * 0.2));
 
-    float cap = fCrystalCap(p, id, side);
-    d = fOpIntersectionChamfer(shard, cap, getChamfer());
+    // Third ring
+    vec3 p3 = p;
+    p3.yz *= rot(t + pc.pitch_bend);
+    p3.xy *= rot(t * 1.2);
+    p3.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    p3.xy *= rot(t * PI / 2.0 - PI / 7.0 + pc.osc_ch2 * PI);
+    float ring_3 = sdf_torus(p3, torusParams * (1.0 - modulation * 0.1));
 
-    return d;
-}
+    // Combine rings with audio-reactive smoothness
+    float combined = smooth_union(ring_1, smooth_union(ring_2, ring_3, smoothness), smoothness);
 
-Model model(vec3 p) {
-    float d = 1000.;
-    vec3 col = vec3(0);
-    vec3 dir = normalize(vec3(0, -PHI, -1));
+    di = min2(di, vec2(combined, 1.0));
 
-    vec4 iv = icosahedronVertex(p);
-    vec3 v = iv.xyz;
-    float id = iv[3] / 12.;
-
-    p *= orientMatrix(v, vec3(0,0,1));
-    pR(p.xy, id);
-
-    // Audio-reactive rotation
-    float rotSpeed = 1.0 + pc.note_velocity * 2.0;
-    pR(p.xy, pc.time * TAU * rotSpeed);
-
-    float focus = dot(v, dir) * .5 + .5;
-
-    d = fCrystal(p, id, focus);
-
-    return Model(d, col, 1.);
+    return di;
 }
 
 // Ray marching
-struct Hit {
-    float len;
-    vec3 colour;
-    float id;
-};
+vec2 trace(vec3 ro, vec3 rd) {
+    vec3 p = ro;
+    vec2 di;
+    float td = 0.0;
 
-Model map(vec3 p) {
-    Model res = Model(1000000., vec3(0), 0.);
+    // Audio-reactive glow intensity
+    float glowStrength = 0.05 + pc.note_velocity * 0.03;
 
-    // Audio-reactive rotation
-    float rx = pc.pitch_bend * PI * 0.5;
-    float ry = pc.time + pc.osc_ch1 * TAU;
+    glow = vec3(0.0);
 
-    pR(p.yz, rx);
-    pR(p.xz, ry);
+    for(int i = 0; i < MAX_STEPS; i++) {
+        if(td >= MAX_DIST) break;
 
-    res = model(p);
-    return res;
-}
+        di = sdf(p);
 
-Hit calcIntersection(vec3 ro, vec3 rd) {
-    float h = INTERSECTION_PRECISION * 2.0;
-    float t = 0.0;
-    float res = -1.0;
-    float id = -1.;
-    vec3 colour;
+        if(di.x < EPSILON) {
+            return vec2(td, di.y);
+        }
 
-    for(int i = 0; i < NUM_OF_TRACE_STEPS; i++) {
-        if(h < INTERSECTION_PRECISION || t > MAX_TRACE_DISTANCE) break;
-        Model m = map(ro + rd * t);
-        h = m.dist;
-        t += h * FUDGE_FACTOR;
-        id = m.id;
-        colour = m.colour;
+        p += di.x * rd;
+
+        // Accumulate glow with audio modulation
+        float glowFactor = (1.0 - sat(di.x / 0.4)) * glowStrength;
+        vec3 glowColor = pos(normalize(p)) * glowFactor;
+
+        // Tint glow based on audio
+        glowColor *= vec3(1.0 + pc.cc74 * 0.5, 1.0, 1.0 + pc.cc1 * 0.5);
+
+        glow += glowColor;
+        td = distance(ro, p);
     }
 
-    if(t < MAX_TRACE_DISTANCE) res = t;
-    if(t > MAX_TRACE_DISTANCE) id = -1.0;
-
-    return Hit(res, colour, id);
+    return vec2(-1.0, -1.0);
 }
 
-vec3 calcNormal(vec3 pos) {
-    vec3 eps = vec3(0.001, 0.0, 0.0);
-    vec3 nor = vec3(
-    map(pos+eps.xyy).dist - map(pos-eps.xyy).dist,
-    map(pos+eps.yxy).dist - map(pos-eps.yxy).dist,
-    map(pos+eps.yyx).dist - map(pos-eps.yyx).dist
+// Normal calculation
+vec3 get_normal(vec3 p) {
+    vec2 e = EPSILON * vec2(1.0, -1.0);
+    return normalize(
+    e.xyy * sdf(p + e.xyy).x +
+    e.yxy * sdf(p + e.yxy).x +
+    e.yyx * sdf(p + e.yyx).x +
+    e.xxx * sdf(p + e.xxx).x
     );
-    return normalize(nor);
 }
 
-vec3 render(Hit hit, vec3 ro, vec3 rd) {
-    // Darker, richer background
-    vec3 bg = vec3(0.01, 0.005, 0.02);
+// Main rendering function
+vec3 render(vec2 uv) {
+    // Camera setup with audio influence
+    float camDist = 3.0 - pc.cc1 * 0.5;
+    vec3 ro = vec3(0.0, 0.0, -camDist);
 
-    // Add subtle background gradient
-    float bgGradient = dot(rd, vec3(0, 1, 0)) * 0.5 + 0.5;
-    bg += vec3(0.02, 0.01, 0.03) * bgGradient * pc.cc74;
+    // Mouse/OSC camera rotation
+    if(pc.mouse_pressed > 0u) {
+        float mx = (float(pc.mouse_x) / float(pc.render_w) - 0.5) * TAU;
+        float my = (float(pc.mouse_y) / float(pc.render_h) - 0.5) * PI;
+        ro.xz *= rot(mx);
+        ro.yz *= rot(my);
+    }
 
-    vec3 color = bg;
+    vec3 rd = normalize(vec3(uv, 1.0));
+    vec3 lo = ro; // Light origin
 
-    if(hit.id == 1.) {
-        vec3 pos = ro + rd * hit.len;
-        vec3 norm = calcNormal(pos);
-        vec3 ref = reflect(rd, norm);
+    vec2 tdi = trace(ro, rd);
 
-        // Multiple light sources
-        vec3 lig1 = normalize(vec3(.5, 1, -.5));
-        vec3 lig2 = normalize(vec3(-.5, .5, .5));
-        vec3 lig3 = normalize(vec3(sin(pc.time * 2.), cos(pc.time * 1.5), -1));
+    if(tdi.x > 0.0) {
+        vec3 p = ro + rd * tdi.x;
+        vec3 n = get_normal(p);
 
-        vec3 dome = vec3(0, 1, 0);
-        vec3 eye = vec3(0, 0, -1);
+        // Iridescence effect with audio modulation
+        vec3 cd = normalize(ro - p);
+        vec3 ld = normalize(lo - p);
+        vec3 reflection = reflect(rd, n);
 
         // Audio-reactive perturbation
-        float perturbStrength = 10.0 + pc.note_velocity * 20.0;
-        vec3 perturb = sin(pos * perturbStrength);
+        float perturbStrength = 10.0 + pc.note_velocity * 15.0;
+        vec3 perturbation = 0.05 * sin(p * perturbStrength);
 
-        color = spectrum(dot(norm + perturb * .05, eye) * 2.);
+        // Calculate iridescence
+        float iridValue = dot(n + perturbation, cd) * 2.0;
+        vec3 iridescence = palette(iridValue);
 
-        // Multi-light specular
-        float specular1 = clamp(dot(ref, lig1), 0., 1.);
-        float specular2 = clamp(dot(ref, lig2), 0., 1.);
-        float specular3 = clamp(dot(ref, lig3), 0., 1.);
+        // Specular with audio influence
+        float specular = sat(dot(reflection, ld));
+        float specIntensity = 0.1 + pc.cc74 * 0.2;
+        specular *= specIntensity * pow(pos(sin(specular * 20.0 - 3.0)) + 0.1, 32.0);
+specular += specIntensity * pow(sat(dot(reflection, ld)) + 0.3, 8.0);
 
-        specular1 = pow((sin(specular1 * 20. - 3.) * .5 + .5) + .1, 32.) * specular1;
-        specular2 = pow(specular2, 16.0) * 0.3;
-        specular3 = pow(specular3, 8.0) * 0.2 * pc.note_velocity;
+// Shadow/ambient
+float shadow = pow(sat(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 3.0);
 
-        float totalSpecular = (specular1 + specular2 + specular3) * (0.1 + pc.cc74 * 0.2);
+// Combine lighting
+vec3 color = iridescence * shadow + specular + glow;
 
-        // Rim lighting effect
-        float rimLight = 1.0 - abs(dot(norm, -rd));
-        rimLight = pow(rimLight, 2.0) * 0.5 * pc.note_velocity;
-        color += vec3(0.3, 0.5, 1.0) * rimLight;
+// Add energy flash
+if(pc.note_velocity > 0.7) {
+    color += vec3(0.2, 0.3, 0.5) * (pc.note_velocity - 0.7);
+}
 
-        float shadow = pow(clamp(dot(norm, dome) * .5 + 1.2, 0., 1.), 3.);
-        color = color * shadow + totalSpecular;
+return color;
+}
 
-        // Audio-reactive fog with color tint
-        float near = 2.8 - pc.osc_ch2 * 0.5;
-        float far = 4. + pc.osc_ch2 * 2.0;
-        float fog = (hit.len - near) / (far - near);
-        fog = clamp(fog, 0., 1.);
-
-        // Fog has slight color based on energy
-        vec3 fogColor = bg + vec3(0.02, 0.01, 0.04) * pc.note_velocity;
-        color = mix(color, fogColor, fog);
-    }
-
-    return color;
+// Background with glow only
+return vec3(0.0) + glow;
 }
 
 void main() {
     vec2 resolution = vec2(float(pc.render_w), float(pc.render_h));
-    vec2 p = (fragUV - 0.5) * 2.0;
-    p.x *= resolution.x / resolution.y;
+    vec2 uv = (fragUV - 0.5) * 2.0;
+    uv.x *= resolution.x / resolution.y;
 
-    // Camera setup with audio influence
-    vec3 camPos = vec3(0., 0.1, 3. - pc.cc1 * 0.5);
-    vec3 camTar = vec3(0.);
+    vec3 c = render(uv);
 
-    // Audio-reactive camera orbit
-    float orbitSpeed = 1.0 - pc.cc74 * 0.7;
-    pR(camPos.yx, pc.time * TAU * orbitSpeed);
-    camPos += camTar;
+    // Subtle vignette
+    float vignette = 1.0 - length(uv) * 0.3;
+    c *= vignette;
 
-    // Camera matrix
-    vec3 ww = normalize(camTar - camPos);
-    vec3 uu = normalize(cross(ww, vec3(0, 1, 0)));
-    vec3 vv = normalize(cross(uu, ww));
-    mat3 camMat = mat3(uu, vv, ww);
-
-    // Create view ray
-    vec3 rd = normalize(camMat * vec3(p.xy, 2.0));
-
-    Hit hit = calcIntersection(camPos, rd);
-    vec3 color = render(hit, camPos, rd);
-
-    // Gamma correction
-    color = pow(color, vec3(1.0 / 2.2));
-
-    outColor = vec4(color, 1.0);
+    // Output with saturation
+    outColor = vec4(sat(c), 1.0);
 }
