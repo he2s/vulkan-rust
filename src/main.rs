@@ -1,4 +1,6 @@
 // use statements
+mod beat_detection;
+use crate::beat_detection::{BeatDetector, BeatDetectorConfig, BeatState};
 use crate::config::config::{
     Args, AudioConfig, Config, GraphicsConfig, ShaderConfig, ShaderPreset, WindowConfig,
     load_or_create_config, print_startup_info,
@@ -341,6 +343,7 @@ pub struct FrameState {
     pub midi: MidiStateSnapshot,
     pub audio_levels: AudioLevels,
     pub osc: OscStateSnapshot,
+    pub beat: BeatState,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -374,6 +377,7 @@ pub struct AudioState {
     processing_buffer: Vec<Complex32>,
     windowing_buffer: Vec<f32>,
     mono_conversion_buffer: Vec<f32>,
+    beat_detector: BeatDetector,
 }
 
 impl std::fmt::Debug for AudioState {
@@ -414,17 +418,23 @@ impl AudioState {
             processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             mono_conversion_buffer: Vec::with_capacity(1024),
+            beat_detector: BeatDetector::new(BeatDetectorConfig::default()),
         }
     }
 
     pub fn push_samples(&mut self, samples: &[f32], sample_rate: u32) {
         self.last_sample_rate = sample_rate;
+        self.beat_detector.process_samples(samples, sample_rate as f32);
         for &sample in samples {
             if self.ring.len() == self.capacity {
                 self.ring.pop_front();
             }
             self.ring.push_back(sample);
         }
+    }
+
+    pub fn get_beat_state(&self) -> BeatState {
+        self.beat_detector.get_state()
     }
 
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
@@ -596,6 +606,10 @@ struct PushConstants {
     osc_ch2: f32,
     render_w: u32,
     render_h: u32,
+    bpm: f32,
+    time_to_next_beat: f32,
+    time_since_last_beat: f32,
+    beats_per_bar: u32,
 }
 
 // vulkan graphics
@@ -1504,15 +1518,20 @@ impl InputManager {
     pub fn get_frame_state(&self) -> FrameState {
         let midi = self.midi_manager.get_state_snapshot();
 
-        let audio_levels = {
+        let (audio_levels, beat_state) = {
             let mut audio_state = self.audio_state.lock().unwrap();
-            audio_state.analyze_and_get_levels()
+            let levels = audio_state.analyze_and_get_levels();
+            let beat = audio_state.get_beat_state();
+            (levels, beat)
         };
-        let osc = self.osc_manager.get_state(); // Returns OscStateSnapshot
+
+        let osc = self.osc_manager.get_state();
+
         FrameState {
             midi,
             audio_levels,
             osc,
+            beat: beat_state,
         }
     }
 
@@ -1787,6 +1806,10 @@ impl App {
             osc_ch2: frame_state.osc.channel2, // Add this
             render_w: w,
             render_h: h,
+            bpm: frame_state.beat.bpm,
+            time_to_next_beat: frame_state.beat.time_to_next_beat,
+            time_since_last_beat: frame_state.beat.time_since_last_beat,
+            beats_per_bar: frame_state.beat.beats_per_bar,
         }
     }
 

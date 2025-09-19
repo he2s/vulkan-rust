@@ -24,7 +24,7 @@ pub struct BeatDetectorConfig {
 impl Default for BeatDetectorConfig {
     fn default() -> Self {
         Self {
-            onset_window_size: 2048,
+            onset_window_size: 512,   // Reduced from 2048
             onset_threshold: 1.5,
             min_beat_interval: 0.25,  // 240 BPM max
             max_beat_interval: 1.5,   // 40 BPM min
@@ -129,20 +129,23 @@ impl BeatDetector {
     pub fn process_samples(&mut self, samples: &[f32], sample_rate: f32) {
         self.sample_rate = sample_rate;
 
-        for &sample in samples {
-            self.onset_buffer.push_back(sample);
-            if self.onset_buffer.len() > self.config.onset_window_size {
-                self.onset_buffer.pop_front();
+        // Downsample for beat detection - process every 4th sample
+        let downsample_factor = 4;
+        for (i, &sample) in samples.iter().enumerate() {
+            if i % downsample_factor == 0 {
+                self.onset_buffer.push_back(sample);
+                if self.onset_buffer.len() > self.config.onset_window_size {
+                    self.onset_buffer.pop_front();
+                }
             }
 
             self.samples_processed += 1;
+        }
 
-            // Process window when full
-            if self.onset_buffer.len() == self.config.onset_window_size {
-                if self.samples_processed % (self.config.onset_window_size as u64 / 4) == 0 {
-                    self.process_window();
-                }
-            }
+        // Process window much less frequently - every 512 samples instead of onset_window_size/4
+        if self.onset_buffer.len() == self.config.onset_window_size
+            && self.samples_processed % 512 == 0 {
+            self.process_window();
         }
 
         self.current_time = self.samples_processed as f64 / self.sample_rate as f64;
@@ -175,34 +178,27 @@ impl BeatDetector {
             self.fft_buffer[i] = sample * window;
         }
 
-        // Simple DFT for magnitude spectrum (in production, use rustfft)
-        for k in 0..self.magnitude_spectrum.len() {
-            let mut real = 0.0;
-            let mut imag = 0.0;
-            let omega = -2.0 * PI * k as f32 / self.config.onset_window_size as f32;
+        // Simplified spectral difference calculation
+        // Instead of full DFT, use a simple energy difference approach
+        let mut energy = 0.0;
+        let chunk_size = 64;
 
-            for (n, &sample) in self.fft_buffer.iter().enumerate() {
-                let angle = omega * n as f32;
-                real += sample * angle.cos();
-                imag += sample * angle.sin();
-            }
+        for i in (0..self.fft_buffer.len()).step_by(chunk_size) {
+            let end = (i + chunk_size).min(self.fft_buffer.len());
+            let chunk_energy: f32 = self.fft_buffer[i..end].iter().map(|x| x * x).sum();
 
-            self.magnitude_spectrum[k] = (real * real + imag * imag).sqrt();
-        }
-
-        // Calculate flux as sum of positive differences
-        let mut flux = 0.0;
-        for i in 0..self.magnitude_spectrum.len() {
-            let diff = self.magnitude_spectrum[i] - self.previous_spectrum[i];
-            if diff > 0.0 {
-                flux += diff;
+            // Compare with previous spectrum at this position
+            if i / chunk_size < self.magnitude_spectrum.len() {
+                let prev_energy = self.previous_spectrum[i / chunk_size];
+                let diff = chunk_energy - prev_energy;
+                if diff > 0.0 {
+                    energy += diff;
+                }
+                self.previous_spectrum[i / chunk_size] = chunk_energy;
             }
         }
 
-        // Update previous spectrum
-        self.previous_spectrum.copy_from_slice(&self.magnitude_spectrum);
-
-        flux
+        energy
     }
 
     /// Check if current spectral flux indicates an onset
