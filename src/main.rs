@@ -1,6 +1,4 @@
 // use statements
-mod beat_detection;
-use crate::beat_detection::{BeatDetector, BeatDetectorConfig, BeatState};
 use crate::config::config::{
     Args, AudioConfig, Config, GraphicsConfig, ShaderConfig, ShaderPreset, WindowConfig,
     load_or_create_config, print_startup_info,
@@ -343,7 +341,29 @@ pub struct FrameState {
     pub midi: MidiStateSnapshot,
     pub audio_levels: AudioLevels,
     pub osc: OscStateSnapshot,
-    pub beat: BeatState,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BeatState {
+    pub bpm: f32,
+    pub time_to_next_beat: f32,
+    pub time_since_last_beat: f32,
+    pub beats_per_bar: u32,
+    pub current_beat_in_bar: u32,
+    pub total_beats: u64,
+}
+
+impl Default for BeatState {
+    fn default() -> Self {
+        Self {
+            bpm: 120.0,
+            time_to_next_beat: 0.5,
+            time_since_last_beat: 0.5,
+            beats_per_bar: 4,
+            current_beat_in_bar: 0,
+            total_beats: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -377,7 +397,15 @@ pub struct AudioState {
     processing_buffer: Vec<Complex32>,
     windowing_buffer: Vec<f32>,
     mono_conversion_buffer: Vec<f32>,
-    beat_detector: BeatDetector,
+
+    beat_history: VecDeque<f64>,
+    last_beat_time: f64,
+    current_bpm: f32,
+    beat_threshold: f32,
+    last_energy: f32,
+    samples_since_beat: u64,
+    total_beats: u64,
+    beats_per_bar: u32,
 }
 
 impl std::fmt::Debug for AudioState {
@@ -418,13 +446,20 @@ impl AudioState {
             processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             mono_conversion_buffer: Vec::with_capacity(1024),
-            beat_detector: BeatDetector::new(BeatDetectorConfig::default()),
+
+            beat_history: VecDeque::with_capacity(16),
+            last_beat_time: 0.0,
+            current_bpm: 120.0,
+            beat_threshold: 0.0,
+            last_energy: 0.0,
+            samples_since_beat: 0,
+            total_beats: 0,
+            beats_per_bar: 4,
         }
     }
 
     pub fn push_samples(&mut self, samples: &[f32], sample_rate: u32) {
         self.last_sample_rate = sample_rate;
-        self.beat_detector.process_samples(samples, sample_rate as f32);
         for &sample in samples {
             if self.ring.len() == self.capacity {
                 self.ring.pop_front();
@@ -433,8 +468,69 @@ impl AudioState {
         }
     }
 
-    pub fn get_beat_state(&self) -> BeatState {
-        self.beat_detector.get_state()
+    fn detect_beat_from_spectrum(&mut self) {
+        // Use existing frequency bands from analyze_frequency_bands
+        let energy = self.levels.low + self.levels.mid * 0.5;
+
+        // Simple onset detection
+        let energy_diff = energy - self.last_energy;
+        self.last_energy = energy;
+
+        // Adaptive threshold
+        if self.beat_history.len() > 4 {
+            let avg_energy: f32 = self.beat_history.iter()
+                .map(|&x| x as f32)
+                .sum::<f32>() / self.beat_history.len() as f32;
+            self.beat_threshold = avg_energy * 1.3;
+        }
+
+        // Check for beat
+        let min_samples_between_beats = (self.last_sample_rate as f64 * 0.25) as u64; // 240 BPM max
+
+        if energy_diff > self.beat_threshold
+            && energy > 0.3
+            && self.samples_since_beat > min_samples_between_beats {
+
+            // Register beat
+            let current_time = self.samples_since_beat as f64 / self.last_sample_rate as f64;
+
+            if self.last_beat_time > 0.0 {
+                let interval = current_time;
+                let instant_bpm = 60.0 / interval as f32;
+
+                // Smooth BPM update
+                if instant_bpm > 40.0 && instant_bpm < 240.0 {
+                    self.current_bpm = self.current_bpm * 0.8 + instant_bpm * 0.2;
+                }
+            }
+
+            self.last_beat_time = current_time;
+            self.samples_since_beat = 0;
+            self.total_beats += 1;
+
+            // Update history
+            self.beat_history.push_back(energy as f64);
+            if self.beat_history.len() > 16 {
+                self.beat_history.pop_front();
+            }
+        }
+
+        self.samples_since_beat += FFT_SAMPLE_SIZE as u64;
+    }
+
+    pub fn get_simple_beat_state(&self) -> BeatState {
+        let beat_interval = 60.0 / self.current_bpm;
+        let time_since = (self.samples_since_beat as f64 / self.last_sample_rate as f64).min(beat_interval as f64);
+        let normalized_time_since = (time_since / beat_interval as f64).min(1.0) as f32;
+
+        BeatState {
+            bpm: self.current_bpm,
+            time_to_next_beat: 1.0 - normalized_time_since,
+            time_since_last_beat: normalized_time_since,
+            beats_per_bar: self.beats_per_bar,
+            current_beat_in_bar: (self.total_beats % self.beats_per_bar as u64) as u32,
+            total_beats: self.total_beats,
+        }
     }
 
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
@@ -459,6 +555,9 @@ impl AudioState {
 
         // Apply smoothing
         self.apply_smoothing(rms, low, mid, high);
+
+        // Run lightweight beat detection using the spectrum data we just calculated
+        self.detect_beat_from_spectrum();
 
         self.levels
     }
@@ -606,10 +705,6 @@ struct PushConstants {
     osc_ch2: f32,
     render_w: u32,
     render_h: u32,
-    bpm: f32,
-    time_to_next_beat: f32,
-    time_since_last_beat: f32,
-    beats_per_bar: u32,
 }
 
 // vulkan graphics
@@ -1518,20 +1613,15 @@ impl InputManager {
     pub fn get_frame_state(&self) -> FrameState {
         let midi = self.midi_manager.get_state_snapshot();
 
-        let (audio_levels, beat_state) = {
+        let audio_levels = {
             let mut audio_state = self.audio_state.lock().unwrap();
-            let levels = audio_state.analyze_and_get_levels();
-            let beat = audio_state.get_beat_state();
-            (levels, beat)
+            audio_state.analyze_and_get_levels()
         };
-
-        let osc = self.osc_manager.get_state();
-
+        let osc = self.osc_manager.get_state(); // Returns OscStateSnapshot
         FrameState {
             midi,
             audio_levels,
             osc,
-            beat: beat_state,
         }
     }
 
@@ -1806,10 +1896,6 @@ impl App {
             osc_ch2: frame_state.osc.channel2, // Add this
             render_w: w,
             render_h: h,
-            bpm: frame_state.beat.bpm,
-            time_to_next_beat: frame_state.beat.time_to_next_beat,
-            time_since_last_beat: frame_state.beat.time_since_last_beat,
-            beats_per_bar: frame_state.beat.beats_per_bar,
         }
     }
 
@@ -1886,11 +1972,11 @@ impl ApplicationHandler for App {
 
             WindowEvent::KeyboardInput {
                 event:
-                    KeyEvent {
-                        physical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
+                KeyEvent {
+                    physical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
                 ..
             } => match physical_key {
                 PhysicalKey::Code(KeyCode::F11) => self.toggle_fullscreen(),
