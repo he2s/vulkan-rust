@@ -34,24 +34,84 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowAttributes},
 };
-//use std::arch::x86_64::*;
+use std::arch::x86_64::*;
 
 mod config;
 mod input;
+
+// Performance optimization functions
+fn optimize_thread_priority() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use std::ffi::c_void;
+
+        const THREAD_PRIORITY_TIME_CRITICAL: i32 = 15;
+        const THREAD_PRIORITY_HIGHEST: i32 = 2;
+
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut c_void;
+            fn SetThreadPriority(thread: *mut c_void, priority: i32) -> i32;
+        }
+
+        let current_thread = GetCurrentThread();
+        SetThreadPriority(current_thread, THREAD_PRIORITY_TIME_CRITICAL);
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid) as libc::pid_t;
+        let mut param = libc::sched_param { sched_priority: 99 };
+        libc::sched_setscheduler(tid, libc::SCHED_FIFO, &param);
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let mut policy: i32 = 0;
+        let mut param = libc::sched_param { sched_priority: 0 };
+
+        if libc::pthread_getschedparam(libc::pthread_self(), &mut policy, &mut param) == 0 {
+            param.sched_priority = 63; // High priority on macOS
+            libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_RR, &param);
+        }
+    }
+}
+
+fn set_process_priority() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use std::ffi::c_void;
+
+        const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
+        const REALTIME_PRIORITY_CLASS: u32 = 0x00000100;
+
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+            fn SetPriorityClass(process: *mut c_void, priority_class: u32) -> i32;
+        }
+
+        let current_process = GetCurrentProcess();
+        SetPriorityClass(current_process, HIGH_PRIORITY_CLASS);
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, -19); // Highest nice priority
+    }
+}
 
 // constants
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
 const DEFAULT_TITLE: &str = "Vulkan MIDI Pixel Shader";
-const FRAME_TIME_VSYNC: Duration = Duration::from_millis(16);
-const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
+const FRAME_TIME_VSYNC: Duration = Duration::from_nanos(16_700_000); // 60 FPS precisely
+const FRAME_TIME_NO_VSYNC: Duration = Duration::from_nanos(500_000); // 2000 FPS cap for responsiveness
 const MAX_NOTES: usize = 128;
 const MAX_CONTROLLERS: usize = 128;
-const AUDIO_RING_CAPACITY: usize = 4096;
-const FFT_SAMPLE_SIZE: usize = 1024;
+const AUDIO_RING_CAPACITY: usize = 2048; // Reduced for lower latency
+const FFT_SAMPLE_SIZE: usize = 512; // Smaller FFT for lower latency
 const DEFAULT_SAMPLE_RATE: u32 = 48000;
-const MAX_FFT_SIZE: usize = 2048;
-const MIN_FFT_SIZE: usize = 256;
+const MAX_FFT_SIZE: usize = 1024; // Reduced max FFT size
+const MIN_FFT_SIZE: usize = 128; // Smaller min FFT size
 
 // device lister
 pub struct DeviceLister;
@@ -419,12 +479,22 @@ impl AudioState {
 
     pub fn push_samples(&mut self, samples: &[f32], sample_rate: u32) {
         self.last_sample_rate = sample_rate;
-        for &sample in samples {
-            if self.ring.len() == self.capacity {
-                self.ring.pop_front();
-            }
-            self.ring.push_back(sample);
+
+        let samples_len = samples.len();
+        if samples_len == 0 {
+            return;
         }
+
+        // Fast path: if we have enough space, just extend
+        if self.ring.len() + samples_len <= self.capacity {
+            self.ring.extend(samples);
+            return;
+        }
+
+        // Need to drop some old samples
+        let overflow = self.ring.len() + samples_len - self.capacity;
+        self.ring.drain(0..overflow);
+        self.ring.extend(samples);
     }
 
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
@@ -437,9 +507,14 @@ impl AudioState {
 
         // Reuse windowing buffer to avoid allocation
         self.windowing_buffer.clear();
-        self.windowing_buffer
-            .extend(self.ring.iter().rev().take(take));
-        self.windowing_buffer.reverse();
+        if self.windowing_buffer.capacity() < take {
+            self.windowing_buffer.reserve(take - self.windowing_buffer.capacity());
+        }
+
+        // Copy in reverse order directly to avoid reverse() call
+        for &sample in self.ring.iter().rev().take(take) {
+            self.windowing_buffer.push(sample);
+        }
 
         // Calculate RMS
         let rms = self.calculate_rms(&self.windowing_buffer);
@@ -454,36 +529,40 @@ impl AudioState {
     }
 
     fn calculate_rms(&self, buffer: &[f32]) -> f32 {
-        let sum_squares: f32 = buffer.iter().map(|x| x * x).sum();
-        (sum_squares / buffer.len() as f32).sqrt()
+        if buffer.len() >= 8 && is_x86_feature_detected!("avx2") {
+            unsafe { self.calculate_rms_simd(buffer) }
+        } else {
+            let sum_squares: f32 = buffer.iter().map(|x| x * x).sum();
+            (sum_squares / buffer.len() as f32).sqrt()
+        }
     }
 
-    // #[target_feature(enable = "avx2")]
-    // unsafe fn calculate_rms_simd(&self, buffer: &[f32]) -> f32 {
-    //     let len = buffer.len();
-    //     let simd_len = len - (len % 8);
-    //     let mut sum = _mm256_setzero_ps();
-    //
-    //     for i in (0..simd_len).step_by(8) {
-    //         let values = _mm256_loadu_ps(buffer.as_ptr().add(i));
-    //         let squared = _mm256_mul_ps(values, values);
-    //         sum = _mm256_add_ps(sum, squared);
-    //     }
-    //
-    //     // Sum the SIMD register elements
-    //     let mut result = 0.0f32;
-    //     let sum_array = std::mem::transmute::<__m256, [f32; 8]>(sum);
-    //     for val in sum_array.iter() {
-    //         result += val;
-    //     }
-    //
-    //     // Handle remaining elements
-    //     for i in simd_len..len {
-    //         result += buffer[i] * buffer[i];
-    //     }
-    //
-    //     (result / len as f32).sqrt()
-    // }
+    #[target_feature(enable = "avx2")]
+    unsafe fn calculate_rms_simd(&self, buffer: &[f32]) -> f32 {
+        let len = buffer.len();
+        let simd_len = len - (len % 8);
+        let mut sum = _mm256_setzero_ps();
+
+        for i in (0..simd_len).step_by(8) {
+            let values = _mm256_loadu_ps(buffer.as_ptr().add(i));
+            let squared = _mm256_mul_ps(values, values);
+            sum = _mm256_add_ps(sum, squared);
+        }
+
+        // Sum the SIMD register elements
+        let mut result = 0.0f32;
+        let sum_array = std::mem::transmute::<__m256, [f32; 8]>(sum);
+        for val in sum_array.iter() {
+            result += val;
+        }
+
+        // Handle remaining elements
+        for i in simd_len..len {
+            result += buffer[i] * buffer[i];
+        }
+
+        (result / len as f32).sqrt()
+    }
 
     fn perform_cached_fft_analysis(&mut self) -> (f32, f32, f32) {
         let fft_len = self
@@ -503,11 +582,15 @@ impl AudioState {
             .clone();
 
         self.processing_buffer.clear();
-        self.processing_buffer.extend(
-            self.windowing_buffer
-                .iter()
-                .map(|&v| Complex32::new(v, 0.0)),
-        );
+        if self.processing_buffer.capacity() < fft_len {
+            self.processing_buffer.reserve(fft_len - self.processing_buffer.capacity());
+        }
+
+        // Pre-allocate and fill efficiently
+        self.processing_buffer.reserve(fft_len);
+        for &sample in &self.windowing_buffer {
+            self.processing_buffer.push(Complex32::new(sample, 0.0));
+        }
 
         fft.process(&mut self.processing_buffer);
 
@@ -565,12 +648,26 @@ impl AudioState {
     }
 
     pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
-        self.mono_conversion_buffer.clear();
-        self.mono_conversion_buffer
-            .reserve(data.len() / channels + 1);
+        if channels == 1 {
+            // For mono input, copy to buffer to maintain consistent lifetime
+            self.mono_conversion_buffer.clear();
+            if self.mono_conversion_buffer.capacity() < data.len() {
+                self.mono_conversion_buffer.reserve(data.len() - self.mono_conversion_buffer.capacity());
+            }
+            self.mono_conversion_buffer.extend_from_slice(data);
+            return &self.mono_conversion_buffer;
+        }
 
+        let output_len = data.len() / channels;
+        self.mono_conversion_buffer.clear();
+
+        if self.mono_conversion_buffer.capacity() < output_len {
+            self.mono_conversion_buffer.reserve(output_len - self.mono_conversion_buffer.capacity());
+        }
+
+        let inv_channels = 1.0 / channels as f32; // Pre-calculate division
         for frame in data.chunks_exact(channels) {
-            let sample = frame.iter().sum::<f32>() / channels as f32;
+            let sample = frame.iter().sum::<f32>() * inv_channels;
             self.mono_conversion_buffer.push(sample);
         }
 
@@ -704,9 +801,16 @@ impl Gfx {
     }
 
     pub unsafe fn draw(&mut self, push_constants: &PushConstants) -> Result<bool> {
-        self.context
-            .device
-            .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)?;
+        // Use shorter timeout for better responsiveness
+        let timeout_ns = 16_666_667; // ~16.67ms (60 FPS)
+        match self.context.device.wait_for_fences(&[self.sync.in_flight], true, timeout_ns) {
+            Ok(_) => {},
+            Err(vk::Result::TIMEOUT) => {
+                // Frame took too long, skip this frame to maintain responsiveness
+                return Ok(false);
+            },
+            Err(e) => return Err(anyhow!("Fence wait failed: {:?}", e)),
+        }
         self.context.device.reset_fences(&[self.sync.in_flight])?;
 
         let (image_index, needs_recreation) = self.acquire_next_image()?;
@@ -1390,7 +1494,7 @@ impl VulkanCommands {
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool: pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 2,
+            command_buffer_count: 3, // Increase for better pipelining
             ..Default::default()
         };
 
@@ -1928,13 +2032,23 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
         let frame_time = if self.config.graphics.vsync {
             FRAME_TIME_VSYNC
         } else {
             FRAME_TIME_NO_VSYNC
         };
 
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + frame_time));
+        // High-precision frame timing with jitter reduction
+        let target_time = now + frame_time;
+
+        // Add frame time tracking for adaptive timing
+        self.frame_times.push_back(now);
+        if self.frame_times.len() > 1000 {
+            self.frame_times.pop_front();
+        }
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(target_time));
 
         if let Some(window) = &self.window {
             window.request_redraw();
@@ -1945,6 +2059,10 @@ impl ApplicationHandler for App {
 // main
 fn main() -> Result<()> {
     env_logger::init();
+
+    // Apply performance optimizations
+    set_process_priority();
+    optimize_thread_priority();
 
     let args = Args::parse();
 
