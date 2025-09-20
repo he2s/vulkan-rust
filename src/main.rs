@@ -686,6 +686,32 @@ impl AudioState {
 
         &self.mono_conversion_buffer
     }
+
+    // Optimized method that converts and pushes in one operation to avoid borrow conflicts
+    pub fn push_audio_data(&mut self, data: &[f32], channels: usize, sample_rate: u32) {
+        if channels == 1 {
+            self.push_samples(data, sample_rate);
+        } else {
+            // Convert to mono and push directly to ring buffer to avoid borrow conflicts
+            self.last_sample_rate = sample_rate;
+
+            let samples_len = data.len() / channels;
+            if samples_len == 0 {
+                return;
+            }
+
+            // Convert and push directly without intermediate buffer
+            for frame in data.chunks_exact(channels) {
+                let sample = frame.iter().sum::<f32>() / channels as f32;
+
+                // Push directly to ring buffer (inlined from push_samples)
+                if self.ring.len() == self.capacity {
+                    self.ring.pop_front();
+                }
+                self.ring.push_back(sample);
+            }
+        }
+    }
 }
 
 // push constants structure
@@ -1616,15 +1642,17 @@ impl InputManager {
 
     pub fn get_frame_state(&self) -> FrameState {
         let midi = self.midi_manager.get_state_snapshot();
+        let osc = self.osc_manager.get_state();
 
-        let (audio_levels, beat_state) = {
-            let mut audio_state = self.audio_state.lock().unwrap();
+        // Use try_lock for better performance under contention
+        let (audio_levels, beat_state) = if let Ok(mut audio_state) = self.audio_state.try_lock() {
             let levels = audio_state.analyze_and_get_levels();
             let beat = audio_state.get_simple_beat_state();
             (levels, beat)
+        } else {
+            // Return default values if audio state is locked (avoid blocking)
+            (AudioLevels::default(), BeatState::default())
         };
-
-        let osc = self.osc_manager.get_state();
 
         FrameState {
             midi,
@@ -1679,8 +1707,8 @@ impl InputManager {
             &audio_config,
             move |data: &[f32], _| {
                 if let Ok(mut state) = audio_state.try_lock() {
-                    let mono_samples = state.convert_to_mono_optimized(data, channels).to_vec();
-                    state.push_samples(&mono_samples, audio_config.sample_rate.0);
+                    // Use optimized method that avoids borrow conflicts
+                    state.push_audio_data(data, channels, audio_config.sample_rate.0);
                 }
             },
             move |err| {
@@ -1763,6 +1791,7 @@ pub struct App {
     last_fps_log: Instant,
     frame_count: u64,
     frame_count_since_log: u32,
+    cached_window_size: (u32, u32), // Cache window size to avoid system calls
 }
 
 impl App {
@@ -1780,6 +1809,10 @@ impl App {
 
         let now = Instant::now();
 
+        // Extract values before moving config
+        let is_fullscreen = config.window.fullscreen;
+        let window_size = (config.window.width, config.window.height);
+
         Self {
             window: None,
             gfx: None,
@@ -1787,7 +1820,7 @@ impl App {
             mouse_pos: (0.0, 0.0),
             mouse_pressed: false,
             input_manager: InputManager::new(),
-            is_fullscreen: config.window.fullscreen,
+            is_fullscreen,
             current_shader_index,
             shader_presets,
             config,
@@ -1796,6 +1829,7 @@ impl App {
             last_fps_log: now,
             frame_count: 0,
             frame_count_since_log: 0,
+            cached_window_size: window_size,
         }
     }
 
@@ -1973,6 +2007,8 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
+                    // Update cached window size
+                    self.cached_window_size = (new_size.width, new_size.height);
                     println!("Window resized to {}x{}", new_size.width, new_size.height);
                     if let (Some(gfx), Some(window)) = (&mut self.gfx, &self.window) {
                         if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
@@ -2019,19 +2055,22 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.update_fps_tracking();
-                if let (Some(start_time), Some(window)) = (&self.start_time, &self.window) {
+                if let Some(start_time) = &self.start_time {
                     let elapsed = start_time.elapsed().as_secs_f32();
-                    let size = window.inner_size();
+                    // Use cached window size to avoid system call
+                    let (width, height) = self.cached_window_size;
                     let push_constants =
-                        self.get_push_constants(elapsed, size.width.max(1), size.height.max(1));
+                        self.get_push_constants(elapsed, width.max(1), height.max(1));
 
                     if let Some(gfx) = &mut self.gfx {
                         match unsafe { gfx.draw(&push_constants) } {
                             Ok(true) => {
                                 // Swapchain needs recreation
-                                if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
-                                    eprintln!("Failed to recreate swapchain: {}", e);
-                                    event_loop.exit();
+                                if let Some(window) = &self.window {
+                                    if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                                        eprintln!("Failed to recreate swapchain: {}", e);
+                                        event_loop.exit();
+                                    }
                                 }
                             }
                             Ok(false) => {
