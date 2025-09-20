@@ -341,6 +341,7 @@ pub struct FrameState {
     pub midi: MidiStateSnapshot,
     pub audio_levels: AudioLevels,
     pub osc: OscStateSnapshot,
+    pub beat: BeatState,  // Add this field
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -705,7 +706,10 @@ struct PushConstants {
     osc_ch2: f32,
     render_w: u32,
     render_h: u32,
-}
+    bpm: f32,
+    time_to_next_beat: f32,
+    time_since_last_beat: f32,
+    beats_per_bar: u32,}
 
 // vulkan graphics
 pub struct VulkanContext {
@@ -1613,15 +1617,20 @@ impl InputManager {
     pub fn get_frame_state(&self) -> FrameState {
         let midi = self.midi_manager.get_state_snapshot();
 
-        let audio_levels = {
+        let (audio_levels, beat_state) = {
             let mut audio_state = self.audio_state.lock().unwrap();
-            audio_state.analyze_and_get_levels()
+            let levels = audio_state.analyze_and_get_levels();
+            let beat = audio_state.get_simple_beat_state();
+            (levels, beat)
         };
-        let osc = self.osc_manager.get_state(); // Returns OscStateSnapshot
+
+        let osc = self.osc_manager.get_state();
+
         FrameState {
             midi,
             audio_levels,
             osc,
+            beat: beat_state,
         }
     }
 
@@ -1896,6 +1905,10 @@ impl App {
             osc_ch2: frame_state.osc.channel2, // Add this
             render_w: w,
             render_h: h,
+            bpm: frame_state.beat.bpm,
+            time_to_next_beat: frame_state.beat.time_to_next_beat,
+            time_since_last_beat: frame_state.beat.time_since_last_beat,
+            beats_per_bar: frame_state.beat.beats_per_bar,
         }
     }
 
