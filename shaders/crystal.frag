@@ -16,12 +16,6 @@ layout(push_constant) uniform PushConstants {
     float osc_ch2;
     uint  render_w;
     uint  render_h;
-
-// Beat detection values
-    float bpm;
-    float time_to_next_beat;      // 0.0 to 1.0
-    float time_since_last_beat;   // 0.0 to 1.0
-    uint  beats_per_bar;
 } pc;
 
 layout(location = 0) in vec2 fragUV;
@@ -33,12 +27,13 @@ layout(location = 0) out vec4 outColor;
 // Constants
 #define PI 3.141592653589793238
 #define TAU (2.0 * PI)
-#define EPSILON 0.008
-#define MAX_STEPS 20
-#define MAX_DIST 100.0
+#define EPSILON 0.01
+#define MAX_STEPS 128
+#define MAX_DIST 120.0
 
 // Helper macros
 #define min2(a, b) ((a.x < b.x) ? a : b)
+#define pos(x) (x * 0.5 + 0.5)
 #define sat(x) clamp(x, 0.0, 1.0)
 
 // Rotation matrix
@@ -48,48 +43,42 @@ mat2 rot(float a) {
     return mat2(c, -s, s, c);
 }
 
-// Beat-synchronized neon color burst palette
-vec3 neonBurst(float t, float intensity) {
-    // Only activate on high energy OR on beat
-    float beatPulse = 1.0 - pc.time_since_last_beat;
-    beatPulse = pow(beatPulse, 2.0); // Exponential decay
-
-    // Trigger on velocity OR beat
-    if(intensity < 0.7 && beatPulse < 0.3) {
-        return vec3(0.0);
-    }
-
-    // Pick neon color based on note count, but cycle with beats
-    float beatCycle = float(uint(pc.time * pc.bpm / 60.0) % 6u);
-    float colorIndex = mix(float(pc.note_count % 6u), beatCycle, 0.3);
-    vec3 neonColor;
-
-    if(colorIndex < 1.0) {
-        neonColor = vec3(0.0, 1.0, 1.0); // Cyan
-    } else if(colorIndex < 2.0) {
-        neonColor = vec3(1.0, 0.0, 1.0); // Magenta
-    } else if(colorIndex < 3.0) {
-        neonColor = vec3(0.0, 1.0, 0.3); // Green
-    } else if(colorIndex < 4.0) {
-        neonColor = vec3(1.0, 0.3, 0.0); // Orange
-    } else if(colorIndex < 5.0) {
-        neonColor = vec3(0.3, 0.5, 1.0); // Blue
-    } else {
-        neonColor = vec3(1.0, 1.0, 0.0); // Yellow
-    }
-
-    // Pulse synchronized to BPM
-    float bpmPulse = 0.5 + 0.5 * sin(pc.time * (pc.bpm / 60.0) * TAU + t * 5.0);
-
-    // Combine beat pulse with BPM pulse
-    float combinedPulse = max(beatPulse, bpmPulse * 0.5);
-
-    return neonColor * max(intensity - 0.7, beatPulse) * 3.0 * combinedPulse;
+// Glitch random function
+float glitchRand(vec2 co) {
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
-// Smooth union
+// Audio-reactive color palette with glitch
+vec3 palette(float x) {
+    // Shift palette based on note count
+    x += float(pc.note_count % 8u) * 0.125;
+
+    // Glitch effect on high energy
+    if(pc.note_velocity > 0.8) {
+        float glitchAmount = glitchRand(vec2(floor(pc.time * 10.0), x));
+        x += glitchAmount * 2.0 - 1.0;
+    }
+
+    // Audio-reactive palette parameters
+    vec3 a = vec3(0.5, 0.5, 0.0); // Base color (fire)
+    vec3 b = vec3(0.5 + pc.cc74 * 0.3); // Amplitude
+    vec3 c = vec3(0.1, 0.5, 0.0) + vec3(pc.osc_ch1, pc.osc_ch2, 0.0) * 0.3;
+    vec3 d = vec3(0.0, pc.pitch_bend * 0.3, pc.note_velocity * 0.2);
+
+    vec3 color = a + b * cos(TAU * (c * x + d));
+
+    // Digital color quantization glitch
+    if(pc.cc1 > 0.7) {
+        float levels = 4.0 + floor(pc.cc1 * 8.0);
+        color = floor(color * levels) / levels;
+    }
+
+    return color;
+}
+
+// Smooth union with audio-reactive smoothness
 float smooth_union(float a, float b, float k) {
-    float h = sat(0.5 + 0.5 * (b - a) / k);
+    float h = sat(pos((b - a) / k));
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
@@ -102,102 +91,98 @@ float sdf_torus(vec3 p, vec2 t) {
 // Global glow accumulator
 vec3 glow;
 
-// Beat-aware SDF scene
+// Main SDF scene with glitch distortions
 vec2 sdf(vec3 p) {
     vec2 di = vec2(120.0, -1.0);
 
-    // Audio parameters
+    // Audio-reactive parameters
     float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
     float brightness = clamp(pc.cc74, 0.0, 1.0);
 
-    // Beat pulse for size modulation
-    float beatPulse = 1.0 - pc.time_since_last_beat;
-    beatPulse = pow(beatPulse, 1.5);
+    // Glitch displacement
+    if(energy > 0.6) {
+        float glitchTime = floor(pc.time * 15.0) / 15.0;
+        vec3 glitchOffset = vec3(
+        glitchRand(vec2(glitchTime, 0.0)),
+        glitchRand(vec2(glitchTime, 1.0)),
+        glitchRand(vec2(glitchTime, 2.0))
+        ) - 0.5;
+        p += glitchOffset * energy * 0.1;
 
-    // BEAT QUIRK 1: Rings snap to different positions on downbeats
-    vec3 snapOffset = vec3(0.0);
-    float beatNumber = floor(pc.time * pc.bpm / 60.0);
-    bool isDownbeat = (uint(beatNumber) % pc.beats_per_bar) == 0u;
-
-    if(isDownbeat && pc.time_since_last_beat < 0.1) {
-        // Strong snap on downbeat
-        snapOffset.x = sin(beatNumber * 12.34) * 0.3;
-        snapOffset.y = cos(beatNumber * 23.45) * 0.3;
-        snapOffset.z = sin(beatNumber * 34.56) * 0.15;
-        p += snapOffset * (1.0 - pc.time_since_last_beat * 10.0);
-    } else if(beatPulse > 0.5) {
-        // Subtle snap on regular beats
-        snapOffset.x = sin(beatNumber * 12.34) * 0.1;
-        snapOffset.y = cos(beatNumber * 23.45) * 0.1;
-        p += snapOffset * beatPulse;
+        // Digital stepping
+        float gridSize = 0.05 / (1.0 + modulation);
+        p = floor(p / gridSize) * gridSize;
     }
 
-    // Time synchronized to BPM
-    float bpmTime = pc.time * (pc.bpm / 120.0); // Normalize to 120 BPM
-    float t = bpmTime * (0.3 + energy * 0.5);
+    // Audio-reactive smoothness
+    float smoothness = 0.2 + modulation * 0.4;
 
-    // BEAT QUIRK 2: Time reverses on every 4th bar
-    if(uint(beatNumber / float(pc.beats_per_bar)) % 4u == 3u) {
-        t *= -1.0;
+    // Time with glitch stuttering
+    float t = pc.time * (0.5 + energy * 1.0);
+    if(pc.cc1 > 0.5) {
+        // Time glitch - random time jumps
+        float glitchJump = floor(glitchRand(vec2(floor(t * 5.0), 0.0)) * 3.0);
+        t += glitchJump;
     }
 
-    // Base torus parameters with beat modulation
-    float ringRadius = 1.0 + beatPulse * 0.15;
-    float ringThickness = 0.12 + energy * 0.03 + beatPulse * 0.02;
+    // Audio-reactive torus size with glitch scaling
+    float ringRadius = 1.0 + vertexEnergy * 0.2;
+    float ringThickness = 0.15 + energy * 0.05;
 
-    // BEAT QUIRK 3: Rings pulse in size based on beat position in bar
-    float barProgress = float(uint(beatNumber) % pc.beats_per_bar) / float(pc.beats_per_bar);
-    ringRadius += sin(barProgress * TAU + pc.pitch_bend * PI) * 0.1;
+    // Random ring size glitches
+    if(pc.note_velocity > 0.9) {
+        ringRadius *= 0.5 + glitchRand(vec2(floor(pc.time * 20.0), 0.0));
+        ringThickness *= 0.5 + glitchRand(vec2(floor(pc.time * 20.0), 1.0));
+    }
 
-    // Different thickness for each ring, modulated by beat
-    vec2 torusParams1 = vec2(ringRadius, ringThickness * (1.0 + beatPulse * 0.2));
-    vec2 torusParams2 = vec2(ringRadius * 0.95, ringThickness * 1.3);
-    vec2 torusParams3 = vec2(ringRadius * 1.05, ringThickness * (0.7 + beatPulse * 0.3));
+    vec2 torusParams = vec2(ringRadius, ringThickness);
 
-    // First ring with beat-synced wobble
+    // First ring with glitchy rotation
     vec3 p1 = p;
-    float wobble1 = sin(beatNumber * 7.0) * 0.1 * modulation;
-    p1.yz *= rot(t + wobble1);
-    p1.xy *= rot(t * 0.7);
-    p1.xz *= rot(t * 0.5);
-    float ring_1 = sdf_torus(p1, torusParams1);
+    float glitchRot1 = pc.pitch_bend + step(0.7, energy) * PI * glitchRand(vec2(floor(t * 10.0), 0.0));
+    p1.yz *= rot(t + glitchRot1);
+    p1.xy *= rot(t * 1.2);
+    p1.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    float ring_1 = sdf_torus(p1, torusParams);
 
-    // Second ring - counter rotation, speeds up on beats
+    // Second ring with random axis flips
     vec3 p2 = p;
-    float beatSpeed = 1.0 + beatPulse * 0.5;
-    p2.yz *= rot(-t * 0.8 * beatSpeed);
-    p2.xy *= rot(t * 0.6);
-    p2.xz *= rot(t * 0.4 + PI * 0.5);
-    float ring_2 = sdf_torus(p2, torusParams2);
-
-    // Third ring - erratic, jumps on beat
-    vec3 p3 = p;
-    // BEAT QUIRK 4: Third ring has beat-synchronized jitter
-    float beatJitter = beatPulse * sin(pc.time * 50.0) * 0.1;
-    p3.yz *= rot(t * 0.9 + beatJitter);
-    p3.xy *= rot(t * 0.5);
-    p3.xz *= rot(t * 0.6 + PI);
-
-    // BEAT QUIRK 5: Third ring disappears on off-beats in fast tempos
-    float ring_3 = sdf_torus(p3, torusParams3);
-    if(pc.bpm > 140.0 && uint(beatNumber) % 2u == 1u) {
-        ring_3 += beatPulse * 0.5; // Fade out on off-beats
+    if(modulation > 0.6 && glitchRand(vec2(floor(t * 8.0), 1.0)) > 0.5) {
+        p2.xy = p2.yx; // Axis swap glitch
     }
+    p2.yz *= rot(t + pc.pitch_bend);
+    p2.xy *= rot(t * 1.2);
+    p2.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    p2.yz *= rot(t * PI / 2.0 + PI / 5.0 + pc.osc_ch1 * PI);
+    float ring_2 = sdf_torus(p2, torusParams * (1.0 + modulation * 0.2));
 
-    // Variable smoothness based on beat progress
-    float smoothness = 0.3 + modulation * 0.2 + pc.time_to_next_beat * 0.2;
+    // Third ring with corruption
+    vec3 p3 = p;
+    // Bit-crush style position corruption
+    if(brightness > 0.7) {
+        float crushLevel = 16.0;
+        p3 = floor(p3 * crushLevel) / crushLevel;
+    }
+    p3.yz *= rot(t + pc.pitch_bend);
+    p3.xy *= rot(t * 1.2);
+    p3.xz *= rot(t * PI / 2.0 + PI / 3.0);
+    p3.xy *= rot(t * PI / 2.0 - PI / 7.0 + pc.osc_ch2 * PI);
+    float ring_3 = sdf_torus(p3, torusParams * (1.0 - modulation * 0.1));
+
+    // Combine with potential glitch artifacts
     float combined = smooth_union(ring_1, smooth_union(ring_2, ring_3, smoothness), smoothness);
 
-    // BEAT QUIRK 6: Spikes appear on strong beats
-    if(isDownbeat && beatPulse > 0.7) {
-        float spikePattern = sin(p.x * 20.0) * sin(p.y * 20.0) * sin(p.z * 20.0);
-        if(spikePattern > 0.8) {
-            combined -= beatPulse * 0.1; // Create beat-synced bumps
+    // Random geometry holes (data corruption effect)
+    if(energy > 0.85) {
+        float holeNoise = glitchRand(p.xy + vec2(floor(pc.time * 30.0)));
+        if(holeNoise > 0.9) {
+            combined += 0.5; // Create holes in geometry
         }
     }
 
     di = min2(di, vec2(combined, 1.0));
+
     return di;
 }
 
@@ -206,6 +191,9 @@ vec2 trace(vec3 ro, vec3 rd) {
     vec3 p = ro;
     vec2 di;
     float td = 0.0;
+
+    // Audio-reactive glow intensity
+    float glowStrength = 0.05 + pc.note_velocity * 0.03;
 
     glow = vec3(0.0);
 
@@ -220,11 +208,14 @@ vec2 trace(vec3 ro, vec3 rd) {
 
         p += di.x * rd;
 
-        // Beat-aware glow accumulation
-        float beatGlow = (1.0 - pc.time_since_last_beat) * 0.5;
-        float glowFactor = (1.0 - sat(di.x / 0.5)) * (0.02 + beatGlow * 0.03);
-        glow += vec3(glowFactor);
+        // Accumulate glow with audio modulation
+        float glowFactor = (1.0 - sat(di.x / 0.4)) * glowStrength;
+        vec3 glowColor = pos(normalize(p)) * glowFactor;
 
+        // Tint glow based on audio
+        glowColor *= vec3(1.0 + pc.cc74 * 0.5, 1.0, 1.0 + pc.cc1 * 0.5);
+
+        glow += glowColor;
         td = distance(ro, p);
     }
 
@@ -242,53 +233,39 @@ vec3 get_normal(vec3 p) {
     );
 }
 
-// Main rendering with beat awareness
+// Main rendering function with glitch effects
 vec3 render(vec2 uv) {
-    // Camera setup - pulses with beat
-    float beatPulse = 1.0 - pc.time_since_last_beat;
-    float camDist = 3.5 - pc.cc1 * 0.5 - beatPulse * 0.2;
+    // Camera setup with glitch jitter
+    float camDist = 3.0 - pc.cc1 * 0.5;
     vec3 ro = vec3(0.0, 0.0, -camDist);
 
-    // Camera orbit synchronized to tempo
-    float camRotSpeed = pc.bpm / 600.0; // Scale rotation to BPM
-    ro.x = sin(pc.time * camRotSpeed * TAU) * 0.5;
-    ro.y = cos(pc.time * camRotSpeed * TAU * 0.7) * 0.3;
-
-    // Beat-synced camera shake on downbeats
-    float beatNumber = floor(pc.time * pc.bpm / 60.0);
-    bool isDownbeat = (uint(beatNumber) % pc.beats_per_bar) == 0u;
-    if(isDownbeat && pc.time_since_last_beat < 0.05) {
-        ro += vec3(
-        sin(beatNumber * 123.4) * 0.1,
-        cos(beatNumber * 234.5) * 0.1,
-        sin(beatNumber * 345.6) * 0.05
-        ) * (0.05 - pc.time_since_last_beat) * 20.0;
+    // Camera glitch shake
+    if(pc.note_velocity > 0.75) {
+        float shakeAmount = (pc.note_velocity - 0.75) * 0.2;
+        ro.x += (glitchRand(vec2(pc.time * 100.0, 0.0)) - 0.5) * shakeAmount;
+        ro.y += (glitchRand(vec2(pc.time * 100.0, 1.0)) - 0.5) * shakeAmount;
     }
 
-    // Mouse control
+    // Mouse/OSC camera rotation
     if(pc.mouse_pressed > 0u) {
         float mx = (float(pc.mouse_x) / float(pc.render_w) - 0.5) * TAU;
         float my = (float(pc.mouse_y) / float(pc.render_h) - 0.5) * PI;
-        vec3 mouseRot = ro;
-        mouseRot.xz = ro.xz * cos(mx) + ro.zy * sin(mx);
-        mouseRot.y = ro.y * cos(my) - ro.z * sin(my);
-        ro = mouseRot;
+        ro.xz *= rot(mx);
+        ro.yz *= rot(my);
     }
 
-    // Look at center
-    vec3 target = vec3(0.0);
-    vec3 forward = normalize(target - ro);
-    vec3 right = normalize(cross(vec3(0, 1, 0), forward));
-    vec3 up = cross(forward, right);
+    vec3 rd = normalize(vec3(uv, 1.0));
 
-    vec3 rd = normalize(forward + uv.x * right + uv.y * up);
+    // Ray direction glitch distortion
+    if(pc.cc74 > 0.8) {
+        float distortTime = floor(pc.time * 20.0);
+        rd.xy += (vec2(
+        glitchRand(vec2(distortTime, uv.y)),
+        glitchRand(vec2(distortTime + 1.0, uv.x))
+        ) - 0.5) * 0.02 * pc.cc74;
+    }
 
-    // Light position moves with beat
-    vec3 lo = vec3(
-    0.5 + sin(beatNumber * 2.0) * 0.5,
-    1.0,
-    -0.5 + cos(beatNumber * 3.0) * 0.5
-    );
+    vec3 lo = ro; // Light origin
 
     vec2 tdi = trace(ro, rd);
 
@@ -296,73 +273,90 @@ vec3 render(vec2 uv) {
         vec3 p = ro + rd * tdi.x;
         vec3 n = get_normal(p);
 
-        // Basic lighting
+        // Glitched normal for corrupted lighting
+        if(pc.osc_ch1 > 0.7) {
+            n.x += (glitchRand(vec2(floor(pc.time * 40.0), 0.0)) - 0.5) * 0.3;
+            n = normalize(n);
+        }
+
+        // Iridescence effect with glitch modulation
+        vec3 cd = normalize(ro - p);
         vec3 ld = normalize(lo - p);
         vec3 reflection = reflect(rd, n);
 
-        // Diffuse lighting with beat modulation
-        float diff = max(dot(n, ld), 0.0);
-        diff = mix(diff, 1.0, beatPulse * 0.2); // Brighten on beat
+        // Audio-reactive perturbation with glitch spikes
+        float perturbStrength = 10.0 + pc.note_velocity * 15.0;
+        if(pc.note_velocity > 0.85) {
+            perturbStrength *= 1.0 + glitchRand(vec2(floor(pc.time * 30.0), 0.0)) * 3.0;
+        }
+        vec3 perturbation = 0.05 * sin(p * perturbStrength);
 
-        // Sharp specular, enhanced on beat
-        float spec = pow(max(dot(reflection, ld), 0.0), 32.0 - beatPulse * 16.0);
+        // Calculate iridescence with potential color corruption
+        float iridValue = dot(n + perturbation, cd) * 2.0;
+        vec3 iridescence = palette(iridValue);
 
-        // BEAT QUIRK 7: Inverted lighting on every other beat at high BPM
-        if(pc.bpm > 160.0 && uint(beatNumber) % 2u == 1u) {
-            diff = 1.0 - diff;
+        // Data corruption - random color channel swaps
+        if(pc.cc1 > 0.8 && glitchRand(vec2(floor(pc.time * 15.0), 0.0)) > 0.7) {
+            iridescence = iridescence.bgr; // Swap color channels
         }
 
-        // Base monochrome value
-        float mono = diff * 0.8 + spec * (0.5 + beatPulse * 0.5);
+        // Specular with glitch flashing
+        float specular = sat(dot(reflection, ld));
+        float specIntensity = 0.1 + pc.cc74 * 0.2;
 
-        // Edge detection for sharp lines
-        float edge = 1.0 - abs(dot(n, -rd));
-        edge = pow(edge, 3.0 - beatPulse); // Sharper edges on beat
-        mono += edge * (0.3 + beatPulse * 0.3);
-
-        // BEAT QUIRK 8: Stripes pattern synchronized to beat grid
-        float barProgress = float(uint(beatNumber) % pc.beats_per_bar) / float(pc.beats_per_bar);
-        float beatGrid = beatNumber + barProgress;
-        float stripes = sin(p.y * 30.0 + beatGrid * PI) > 0.0 ? 1.0 : 0.8;
-        mono *= stripes;
-
-        // Start with black and white
-        vec3 color = vec3(mono);
-
-        // BEAT-AWARE NEON: Triggers on beats even without MIDI
-        if(pc.note_velocity > 0.7 || beatPulse > 0.7) {
-            vec3 neon = neonBurst(dot(n, rd), max(pc.note_velocity, beatPulse));
-
-            // Neon affects edges more, especially on downbeats
-            float edgeMultiplier = isDownbeat ? 3.0 : 2.0;
-            neon *= (1.0 + edge * edgeMultiplier);
-
-            // Secondary neon flash on off-beats
-            if(uint(beatNumber) % 2u == 1u) {
-                vec3 neon2 = neonBurst(dot(n, rd) + 0.5, beatPulse);
-                neon += neon2 * 0.5;
-            }
-
-            color = mix(color, color + neon, sat(max(pc.note_velocity - 0.7, beatPulse) * 3.0));
+        // Random specular spikes (electrical glitches)
+        if(glitchRand(vec2(floor(pc.time * 60.0), dot(p, p))) > 0.95) {
+            specIntensity *= 5.0;
         }
 
-        // BEAT QUIRK 9: Flash on downbeats
-        if(isDownbeat && pc.time_since_last_beat < 0.02) {
-            color += vec3(1.0);
-        }
+        specular *= specIntensity * pow(pos(sin(specular * 20.0 - 3.0)) + 0.1, 32.0);
+specular += specIntensity * pow(sat(dot(reflection, ld)) + 0.3, 8.0);
 
-        // High contrast with beat modulation
-        float contrastPower = 0.1 + beatPulse * 0.3;
-        color = smoothstep(contrastPower, 0.9, color);
+// Shadow/ambient with random blackouts
+float shadow = pow(sat(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 3.0);
+if(pc.osc_ch2 > 0.8 && glitchRand(vec2(floor(pc.time * 10.0), 0.0)) > 0.8) {
+    shadow *= 0.1; // Random darkness
+}
 
-        // Add beat-pulsing glow
-        color += glow * (0.5 + beatPulse * 0.5);
+// Combine lighting
+vec3 color = iridescence * shadow + specular + glow;
 
-        return color;
+// Digital artifacts - scan lines
+float scanline = step(0.5, fract(p.y * 50.0 + pc.time * 10.0));
+if(pc.cc1 > 0.6) {
+    color *= 0.8 + 0.2 * scanline;
+}
+
+// Chromatic aberration glitch
+if(pc.note_velocity > 0.7) {
+    float chromaShift = 0.01 * pc.note_velocity;
+    color.r *= 1.0 + chromaShift;
+    color.b *= 1.0 - chromaShift;
+}
+
+// Energy flash with corruption
+if(pc.note_velocity > 0.7) {
+    vec3 flashColor = vec3(0.2, 0.3, 0.5) * (pc.note_velocity - 0.7);
+    // Random color inversions
+    if(glitchRand(vec2(floor(pc.time * 25.0), 0.0)) > 0.9) {
+        flashColor = vec3(1.0) - flashColor;
     }
+    color += flashColor;
+}
 
-    // Background with beat-reactive glow
-    return glow * (0.3 + beatPulse * 0.2);
+return color;
+}
+
+// Background with glitchy glow
+vec3 bgColor = vec3(0.0) + glow;
+
+// Static noise on background
+if(pc.cc74 > 0.5) {
+    float noise = glitchRand(uv + vec2(pc.time * 100.0));
+    bgColor += vec3(noise) * 0.05 * pc.cc74;
+}
+
+return bgColor;
 }
 
 void main() {
@@ -370,28 +364,12 @@ void main() {
     vec2 uv = (fragUV - 0.5) * 2.0;
     uv.x *= resolution.x / resolution.y;
 
-    // Beat-based UV distortion on strong beats
-    float beatNumber = floor(pc.time * pc.bpm / 60.0);
-    bool isDownbeat = (uint(beatNumber) % pc.beats_per_bar) == 0u;
-    if(isDownbeat && pc.time_since_last_beat < 0.1) {
-        float distortion = (0.1 - pc.time_since_last_beat) * 10.0;
-        uv *= 1.0 + distortion * 0.1;
-    }
-
     vec3 c = render(uv);
 
-    // Final contrast adjustment
-    c = pow(c, vec3(1.0 / 2.2));
-
-    // Beat-aware vignette
-    float vignette = 1.0 - smoothstep(0.5 - pc.time_since_last_beat * 0.2, 1.5, length(uv));
+    // Subtle vignette
+    float vignette = 1.0 - length(uv) * 0.3;
     c *= vignette;
 
-    // Threshold for pure black/white with neon, pulses with beat
-    if(pc.cc74 > 0.5) {
-        float threshold = 0.5 - pc.time_since_last_beat * 0.2;
-        c = step(threshold, c);
-    }
-
+    // Output with saturation
     outColor = vec4(sat(c), 1.0);
 }
