@@ -87,7 +87,7 @@ pub struct GraphicsConfig {
     pub validation_layers: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Default)]
 pub struct AudioConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -148,6 +148,7 @@ const fn default_shader_preset() -> ShaderPreset {
 const fn default_validation_layers() -> bool {
     cfg!(debug_assertions)
 }
+#[allow(dead_code)]
 const fn default_osc_port() -> u16 {
     8000
 }
@@ -173,15 +174,6 @@ impl Default for GraphicsConfig {
     }
 }
 
-impl Default for AudioConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            device_name: None,
-            sample_rate: None,
-        }
-    }
-}
 
 impl Default for ShaderConfig {
     fn default() -> Self {
@@ -222,6 +214,7 @@ impl Config {
     }
 }
 
+#[allow(dead_code)]
 pub fn parse_shader_preset(shader_str: &str) -> ShaderPreset {
     match shader_str.to_lowercase().as_str() {
         "torus" => ShaderPreset::Torus,
@@ -230,7 +223,7 @@ pub fn parse_shader_preset(shader_str: &str) -> ShaderPreset {
         "custom" => ShaderPreset::Custom,
         "stars" => ShaderPreset::Stars,
         _ => {
-            eprintln!("Unknown shader preset '{}', using default", shader_str);
+            eprintln!("Unknown shader preset '{shader_str}', using default");
             ShaderPreset::Torus
         }
     }
@@ -240,25 +233,22 @@ pub fn load_or_create_config(config_path: &str) -> Result<Config> {
     if Path::new(config_path).exists() {
         match Config::load_from_file(config_path) {
             Ok(config) => {
-                println!("Loaded configuration from: {}", config_path);
+                println!("Loaded configuration from: {config_path}");
                 Ok(config)
             }
             Err(e) => {
-                eprintln!("Failed to load config file '{}': {}", config_path, e);
+                eprintln!("Failed to load config file '{config_path}': {e}");
                 println!("Using default configuration");
                 Ok(Config::default())
             }
         }
     } else {
-        println!(
-            "Config file '{}' not found, creating default config",
-            config_path
-        );
+        println!("Config file '{config_path}' not found, creating default config");
         let default_config = Config::default();
         if let Err(e) = default_config.save_to_file(config_path) {
-            eprintln!("Failed to save default config: {}", e);
+            eprintln!("Failed to save default config: {e}");
         } else {
-            println!("Default configuration saved to: {}", config_path);
+            println!("Default configuration saved to: {config_path}");
         }
         Ok(default_config)
     }

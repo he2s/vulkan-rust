@@ -1,6 +1,6 @@
 // use statements
 use crate::config::config::{
-    Args, AudioConfig, Config, GraphicsConfig, ShaderConfig, ShaderPreset, WindowConfig,
+    Args, AudioConfig, Config, ShaderConfig, ShaderPreset,
     load_or_create_config, print_startup_info,
 };
 mod audio;
@@ -16,16 +16,12 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use midir::{Ignore, MidiInput};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use rustfft::{Fft, FftPlanner, num_complex::Complex32};
-use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     ffi::{CString, c_char},
     fs,
-    path::Path,
-    ptr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -34,7 +30,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Fullscreen, Window, WindowAttributes},
+    window::{Fullscreen, Window},
 };
 //use std::arch::x86_64::*;
 
@@ -42,13 +38,8 @@ mod config;
 mod input;
 
 // constants
-const DEFAULT_WIDTH: u32 = 800;
-const DEFAULT_HEIGHT: u32 = 600;
-const DEFAULT_TITLE: &str = "Vulkan MIDI Pixel Shader";
 const FRAME_TIME_VSYNC: Duration = Duration::from_millis(16);
 const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
-const MAX_NOTES: usize = 128;
-const MAX_CONTROLLERS: usize = 128;
 
 
 // device lister
@@ -72,12 +63,12 @@ impl DeviceLister {
                     println!("  No Vulkan-capable GPUs found");
                 } else {
                     for (i, gpu) in gpus.iter().enumerate() {
-                        println!("  [{}] {}", i, gpu);
+                        println!("  [{i}] {gpu}");
                     }
                 }
             }
             Err(e) => {
-                println!("  Error enumerating GPUs: {}", e);
+                println!("  Error enumerating GPUs: {e}");
             }
         }
         println!();
@@ -135,10 +126,7 @@ impl DeviceLister {
                 let minor = vk::api_version_minor(properties.api_version);
                 let patch = vk::api_version_patch(properties.api_version);
 
-                let info = format!(
-                    "{} ({}) - VRAM: {:.1} GB, Vulkan: {}.{}.{}",
-                    name, device_type, vram_gb, major, minor, patch
-                );
+                let info = format!("{name} ({device_type}) - VRAM: {vram_gb:.1} GB, Vulkan: {major}.{minor}.{patch}");
 
                 gpu_list.push(info);
             }
@@ -162,14 +150,14 @@ impl DeviceLister {
                 } else {
                     for (i, port) in ports.iter().enumerate() {
                         match midi_in.port_name(port) {
-                            Ok(name) => println!("  [{}] {}", i, name),
-                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                            Ok(name) => println!("  [{i}] {name}"),
+                            Err(e) => println!("  [{i}] <Error reading name: {e}>"),
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("  Error initializing MIDI: {}", e);
+                println!("  Error initializing MIDI: {e}");
             }
         }
         println!();
@@ -183,8 +171,8 @@ impl DeviceLister {
 
         if let Some(device) = host.default_input_device() {
             match device.name() {
-                Ok(name) => println!("  [DEFAULT] {}", name),
-                Err(e) => println!("  [DEFAULT] <Error reading name: {}>", e),
+                Ok(name) => println!("  [DEFAULT] {name}"),
+                Err(e) => println!("  [DEFAULT] <Error reading name: {e}>"),
             }
         }
 
@@ -217,15 +205,15 @@ impl DeviceLister {
                                     Err(_) => String::new(),
                                 };
 
-                                println!("  [{}] {}{}", i, name, config_info);
+                                println!("  [{i}] {name}{config_info}");
                             }
-                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                            Err(e) => println!("  [{i}] <Error reading name: {e}>"),
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("  Error enumerating audio devices: {}", e);
+                println!("  Error enumerating audio devices: {e}");
             }
         }
 
@@ -234,8 +222,8 @@ impl DeviceLister {
 
         if let Some(device) = host.default_output_device() {
             match device.name() {
-                Ok(name) => println!("  [DEFAULT] {}", name),
-                Err(e) => println!("  [DEFAULT] <Error reading name: {}>", e),
+                Ok(name) => println!("  [DEFAULT] {name}"),
+                Err(e) => println!("  [DEFAULT] <Error reading name: {e}>"),
             }
         }
 
@@ -247,14 +235,14 @@ impl DeviceLister {
                 } else {
                     for (i, device) in devices.iter().enumerate() {
                         match device.name() {
-                            Ok(name) => println!("  [{}] {}", i, name),
-                            Err(e) => println!("  [{}] <Error reading name: {}>", i, e),
+                            Ok(name) => println!("  [{i}] {name}"),
+                            Err(e) => println!("  [{i}] <Error reading name: {e}>"),
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("  Error enumerating audio output devices: {}", e);
+                println!("  Error enumerating audio output devices: {e}");
             }
         }
         println!();
@@ -392,7 +380,7 @@ struct InstanceData {
 // push constants
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct PushConstants {
+pub struct PushConstants {
     time: f32,
     mouse_x: u32,
     mouse_y: u32,
@@ -449,6 +437,7 @@ pub struct VulkanSwapchain {
     swapchain: vk::SwapchainKHR,
     extent: vk::Extent2D,
     format: vk::Format,
+    #[allow(dead_code)]
     images: Vec<vk::Image>,
     views: Vec<vk::ImageView>,
 }
@@ -474,7 +463,9 @@ pub struct VulkanPipeline {
     // Compute pipeline for point generation
     compute_pipeline_layout: vk::PipelineLayout,
     compute_pipeline: vk::Pipeline,
+    #[allow(dead_code)]
     descriptor_set_layout: vk::DescriptorSetLayout,
+    #[allow(dead_code)]
     descriptor_pool: vk::DescriptorPool,
     descriptor_set: vk::DescriptorSet,
     use_compute_generation: bool,
@@ -509,13 +500,16 @@ pub struct Gfx {
 }
 
 impl Gfx {
+    /// # Safety
+    /// This function is unsafe because it creates Vulkan resources and calls unsafe Vulkan functions.
+    /// The caller must ensure that the window handle is valid and that Vulkan is properly initialized.
     pub unsafe fn new(window: &Window, shader_config: &ShaderConfig, vsync: bool) -> Result<Self> {
-        let context = VulkanContext::new(window)?;
-        let swapchain = VulkanSwapchain::new(&context, window, vsync)?;
-        let buffers = VulkanBuffers::new(&context)?;
-        let pipeline = VulkanPipeline::new(&context, &swapchain, shader_config, &buffers)?;
-        let commands = VulkanCommands::new(&context)?;
-        let sync = VulkanSync::new(&context)?;
+        let context = unsafe { VulkanContext::new(window)? };
+        let swapchain = unsafe { VulkanSwapchain::new(&context, window, vsync)? };
+        let buffers = unsafe { VulkanBuffers::new(&context)? };
+        let pipeline = unsafe { VulkanPipeline::new(&context, &swapchain, shader_config, &buffers)? };
+        let commands = unsafe { VulkanCommands::new(&context)? };
+        let sync = unsafe { VulkanSync::new(&context)? };
 
         Ok(Self {
             context,
@@ -529,15 +523,18 @@ impl Gfx {
         })
     }
 
+    /// # Safety
+    /// This function is unsafe because it calls unsafe Vulkan functions to destroy and recreate swapchain resources.
+    /// The caller must ensure that all operations on the swapchain have completed before calling this function.
     pub unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<()> {
-        self.context.device.device_wait_idle()?;
+        unsafe { self.context.device.device_wait_idle()? };
 
-        self.pipeline.cleanup_framebuffers(&self.context.device);
-        self.swapchain.cleanup(&self.context.device);
+        unsafe { self.pipeline.cleanup_framebuffers(&self.context.device) };
+        unsafe { self.swapchain.cleanup(&self.context.device) };
 
-        self.swapchain = VulkanSwapchain::new(&self.context, window, self.vsync)?;
-        self.pipeline
-            .recreate_framebuffers(&self.context.device, &self.swapchain)?;
+        self.swapchain = unsafe { VulkanSwapchain::new(&self.context, window, self.vsync)? };
+        unsafe { self.pipeline
+            .recreate_framebuffers(&self.context.device, &self.swapchain)? };
 
         self.state.current_extent = None;
 
@@ -548,44 +545,50 @@ impl Gfx {
         Ok(())
     }
 
+    /// # Safety
+    /// This function is unsafe because it calls unsafe Vulkan functions to destroy and recreate pipeline resources.
+    /// The caller must ensure that all operations using the pipeline have completed before calling this function.
     pub unsafe fn recreate_pipeline(&mut self, shader_config: &ShaderConfig) -> Result<()> {
-        self.context.device.device_wait_idle()?;
+        unsafe { self.context.device.device_wait_idle()? };
 
-        self.pipeline.cleanup_pipeline(&self.context.device);
+        unsafe { self.pipeline.cleanup_pipeline(&self.context.device) };
 
-        self.pipeline
-            .create_pipeline(&self.context, &self.swapchain, shader_config)?;
+        unsafe { self.pipeline
+            .create_pipeline(&self.context, &self.swapchain, shader_config)? };
 
         println!("Pipeline recreated successfully");
         Ok(())
     }
 
+    /// # Safety
+    /// This function is unsafe because it calls numerous unsafe Vulkan functions for command buffer recording and submission.
+    /// The caller must ensure that Vulkan resources are properly initialized and that synchronization is handled correctly.
     pub unsafe fn draw(&mut self, push_constants: &PushConstants) -> Result<bool> {
-        self.context
+        unsafe { self.context
             .device
-            .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)?;
-        self.context.device.reset_fences(&[self.sync.in_flight])?;
+            .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)? };
+        unsafe { self.context.device.reset_fences(&[self.sync.in_flight])? };
 
-        let (image_index, needs_recreation) = self.acquire_next_image()?;
+        let (image_index, needs_recreation) = unsafe { self.acquire_next_image()? };
         if needs_recreation {
             return Ok(true);
         }
 
         let cmd_buffer = self.commands.get_current_buffer();
-        self.record_command_buffer(cmd_buffer, image_index, push_constants)?;
+        unsafe { self.record_command_buffer(cmd_buffer, image_index, push_constants)? };
 
-        self.submit_commands(cmd_buffer)?;
+        unsafe { self.submit_commands(cmd_buffer)? };
 
-        self.present_image(image_index)
+        unsafe { self.present_image(image_index) }
     }
 
     unsafe fn acquire_next_image(&self) -> Result<(u32, bool)> {
-        match self.swapchain.loader.acquire_next_image(
+        match unsafe { self.swapchain.loader.acquire_next_image(
             self.swapchain.swapchain,
             u64::MAX,
             self.sync.image_available,
             vk::Fence::null(),
-        ) {
+        ) } {
             Ok((index, suboptimal)) => Ok((index, suboptimal)),
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Ok((0, true)),
             Err(e) => Err(anyhow!("Failed to acquire image: {:?}", e)),
@@ -598,13 +601,17 @@ impl Gfx {
         image_index: u32,
         push_constants: &PushConstants,
     ) -> Result<()> {
-        self.context
-            .device
-            .reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())?;
+        unsafe {
+            self.context
+                .device
+                .reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())?;
+        }
 
-        self.context
-            .device
-            .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())?;
+        unsafe {
+            self.context
+                .device
+                .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())?;
+        }
 
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
@@ -626,16 +633,20 @@ impl Gfx {
             ..Default::default()
         };
 
-        self.context.device.cmd_begin_render_pass(
-            cmd_buffer,
-            &render_pass_begin,
-            vk::SubpassContents::INLINE,
-        );
-        self.context.device.cmd_bind_pipeline(
-            cmd_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline.pipeline,
-        );
+        unsafe {
+            self.context.device.cmd_begin_render_pass(
+                cmd_buffer,
+                &render_pass_begin,
+                vk::SubpassContents::INLINE,
+            );
+        }
+        unsafe {
+            self.context.device.cmd_bind_pipeline(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.pipeline,
+            );
+        }
 
         let viewport = vk::Viewport {
             x: 0.0,
@@ -645,12 +656,16 @@ impl Gfx {
             min_depth: 0.0,
             max_depth: 1.0,
         };
-        self.context
-            .device
-            .cmd_set_viewport(cmd_buffer, 0, &[viewport]);
-        self.context
-            .device
-            .cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+        unsafe {
+            self.context
+                .device
+                .cmd_set_viewport(cmd_buffer, 0, &[viewport]);
+        }
+        unsafe {
+            self.context
+                .device
+                .cmd_set_scissor(cmd_buffer, 0, &[render_area]);
+        }
 
         let push_constant_stages = if self.pipeline.has_geometry_shader {
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::GEOMETRY | vk::ShaderStageFlags::FRAGMENT
@@ -658,50 +673,60 @@ impl Gfx {
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT
         };
 
-        self.context.device.cmd_push_constants(
-            cmd_buffer,
-            self.pipeline.pipeline_layout,
-            push_constant_stages,
-            0,
-            std::slice::from_raw_parts(
-                push_constants as *const PushConstants as *const u8,
-                std::mem::size_of::<PushConstants>(),
-            ),
-        );
-
-        // Choose drawing method based on pipeline type
-        if self.pipeline.use_compute_generation {
-            // Dispatch compute shader first to generate particles
-            self.context.device.cmd_bind_pipeline(
-                cmd_buffer,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline.compute_pipeline,
-            );
-
-            // Bind descriptor set for compute shader
-            self.context.device.cmd_bind_descriptor_sets(
-                cmd_buffer,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline.compute_pipeline_layout,
-                0,
-                &[self.pipeline.descriptor_set],
-                &[],
-            );
-
-            // Push constants for compute shader
+        unsafe {
             self.context.device.cmd_push_constants(
                 cmd_buffer,
-                self.pipeline.compute_pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
+                self.pipeline.pipeline_layout,
+                push_constant_stages,
                 0,
                 std::slice::from_raw_parts(
                     push_constants as *const PushConstants as *const u8,
                     std::mem::size_of::<PushConstants>(),
                 ),
             );
+        }
+
+        // Choose drawing method based on pipeline type
+        if self.pipeline.use_compute_generation {
+            // Dispatch compute shader first to generate particles
+            unsafe {
+                self.context.device.cmd_bind_pipeline(
+                    cmd_buffer,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.pipeline.compute_pipeline,
+                );
+            }
+
+            // Bind descriptor set for compute shader
+            unsafe {
+                self.context.device.cmd_bind_descriptor_sets(
+                    cmd_buffer,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.pipeline.compute_pipeline_layout,
+                    0,
+                    &[self.pipeline.descriptor_set],
+                    &[],
+                );
+            }
+
+            // Push constants for compute shader
+            unsafe {
+                self.context.device.cmd_push_constants(
+                    cmd_buffer,
+                    self.pipeline.compute_pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    std::slice::from_raw_parts(
+                        push_constants as *const PushConstants as *const u8,
+                        std::mem::size_of::<PushConstants>(),
+                    ),
+                );
+            }
 
             // Dispatch compute shader (50,000 points, 64 threads per workgroup)
-            self.context.device.cmd_dispatch(cmd_buffer, (50000 + 63) / 64, 1, 1);
+            unsafe {
+                self.context.device.cmd_dispatch(cmd_buffer, 50000_u32.div_ceil(64), 1, 1);
+            }
 
             // Memory barrier to ensure compute writes complete before vertex reading
             let barrier = vk::MemoryBarrier {
@@ -710,53 +735,67 @@ impl Gfx {
                 ..Default::default()
             };
 
-            self.context.device.cmd_pipeline_barrier(
-                cmd_buffer,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::VERTEX_INPUT,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
-            );
+            unsafe {
+                self.context.device.cmd_pipeline_barrier(
+                    cmd_buffer,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::VERTEX_INPUT,
+                    vk::DependencyFlags::empty(),
+                    &[barrier],
+                    &[],
+                    &[],
+                );
+            }
 
             // Switch back to graphics pipeline for rendering
-            self.context.device.cmd_bind_pipeline(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.pipeline,
-            );
+            unsafe {
+                self.context.device.cmd_bind_pipeline(
+                    cmd_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline.pipeline,
+                );
+            }
 
             // Bind descriptor set for vertex shader
-            self.context.device.cmd_bind_descriptor_sets(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.pipeline_layout,
-                0,
-                &[self.pipeline.descriptor_set],
-                &[],
-            );
+            unsafe {
+                self.context.device.cmd_bind_descriptor_sets(
+                    cmd_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline.pipeline_layout,
+                    0,
+                    &[self.pipeline.descriptor_set],
+                    &[],
+                );
+            }
 
             // Bind vertex buffer (triangle vertices)
             let vertex_buffers = [self.buffers.vertex_buffer];
             let offsets = [0];
-            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+            unsafe {
+                self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+            }
 
             // Bind index buffer
-            self.context.device.cmd_bind_index_buffer(
-                cmd_buffer,
-                self.buffers.index_buffer,
-                0,
-                vk::IndexType::UINT16
-            );
+            unsafe {
+                self.context.device.cmd_bind_index_buffer(
+                    cmd_buffer,
+                    self.buffers.index_buffer,
+                    0,
+                    vk::IndexType::UINT16
+                );
+            }
 
             // Draw instanced triangles: 3 indices per triangle, 50,000 instances
-            self.context.device.cmd_draw_indexed(cmd_buffer, 3, 50000, 0, 0, 0);
+            unsafe {
+                self.context.device.cmd_draw_indexed(cmd_buffer, 3, 50000, 0, 0, 0);
+            }
 
         } else if self.pipeline.has_geometry_shader {
             // For geometry shader: draw points that will be expanded into triangles
             // No need for index buffer or instance buffer
-            self.context.device.cmd_draw(cmd_buffer, 400, 1, 0, 0); // 20x20 grid of points
+            unsafe {
+                self.context.device.cmd_draw(cmd_buffer, 400, 1, 0, 0); // 20x20 grid of points
+            }
         } else {
             // Traditional indexed drawing with instances
             // Bind vertex and instance buffers
@@ -764,22 +803,34 @@ impl Gfx {
             let instance_buffers = [self.buffers.instance_buffer];
             let offsets = [0];
 
-            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
-            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 1, &instance_buffers, &offsets);
+            unsafe {
+                self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+            }
+            unsafe {
+                self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 1, &instance_buffers, &offsets);
+            }
 
             // Bind index buffer
-            self.context.device.cmd_bind_index_buffer(
-                cmd_buffer,
-                self.buffers.index_buffer,
-                0,
-                vk::IndexType::UINT16
-            );
+            unsafe {
+                self.context.device.cmd_bind_index_buffer(
+                    cmd_buffer,
+                    self.buffers.index_buffer,
+                    0,
+                    vk::IndexType::UINT16
+                );
+            }
 
             // Draw indexed: 6 indices per rectangle, 10,000 instances (40,000 vertices instead of 60,000)
-            self.context.device.cmd_draw_indexed(cmd_buffer, 6, 10000, 0, 0, 0);
+            unsafe {
+                self.context.device.cmd_draw_indexed(cmd_buffer, 6, 10000, 0, 0, 0);
+            }
         }
-        self.context.device.cmd_end_render_pass(cmd_buffer);
-        self.context.device.end_command_buffer(cmd_buffer)?;
+        unsafe {
+            self.context.device.cmd_end_render_pass(cmd_buffer);
+        }
+        unsafe {
+            self.context.device.end_command_buffer(cmd_buffer)?;
+        }
 
         Ok(())
     }
@@ -801,11 +852,11 @@ impl Gfx {
             ..Default::default()
         };
 
-        self.context.device.queue_submit(
+        unsafe { self.context.device.queue_submit(
             self.context.queue,
             &[submit_info],
             self.sync.in_flight,
-        )?;
+        )? };
         Ok(())
     }
 
@@ -823,10 +874,10 @@ impl Gfx {
             ..Default::default()
         };
 
-        match self
+        match unsafe { self
             .swapchain
             .loader
-            .queue_present(self.context.queue, &present_info)
+            .queue_present(self.context.queue, &present_info) }
         {
             Ok(_) => Ok(false),
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => Ok(true),
@@ -843,14 +894,14 @@ impl VulkanContext {
         let required_extensions =
             ash_window::enumerate_required_extensions(display_handle)?.to_vec();
 
-        let instance = Self::create_instance(&entry, &required_extensions)?;
+        let instance = unsafe { Self::create_instance(&entry, &required_extensions)? };
         let surface =
-            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)?;
+            unsafe { ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)? };
         let surface_loader = surface::Instance::new(&entry, &instance);
         let (physical_device, queue_family_index) =
-            Self::select_physical_device(&instance, &surface_loader, surface)?;
+            unsafe { Self::select_physical_device(&instance, &surface_loader, surface)? };
         let (device, queue) =
-            Self::create_logical_device(&instance, physical_device, queue_family_index)?;
+            unsafe { Self::create_logical_device(&instance, physical_device, queue_family_index)? };
 
         Ok(Self {
             _entry: entry,
@@ -897,7 +948,7 @@ impl VulkanContext {
             ..Default::default()
         };
 
-        Ok(entry.create_instance(&create_info, None)?)
+        Ok(unsafe { entry.create_instance(&create_info, None)? })
     }
 
     unsafe fn select_physical_device(
@@ -905,16 +956,16 @@ impl VulkanContext {
         surface_loader: &surface::Instance,
         surface: vk::SurfaceKHR,
     ) -> Result<(vk::PhysicalDevice, u32)> {
-        let physical_devices = instance.enumerate_physical_devices()?;
+        let physical_devices = unsafe { instance.enumerate_physical_devices()? };
 
         for device in physical_devices {
-            let queue_families = instance.get_physical_device_queue_family_properties(device);
+            let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
 
             for (index, queue_family) in queue_families.iter().enumerate() {
                 let index = index as u32;
 
                 if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                    && surface_loader.get_physical_device_surface_support(device, index, surface)?
+                    && unsafe { surface_loader.get_physical_device_surface_support(device, index, surface)? }
                 {
                     return Ok((device, index));
                 }
@@ -946,8 +997,8 @@ impl VulkanContext {
             ..Default::default()
         };
 
-        let device = instance.create_device(physical_device, &device_create_info, None)?;
-        let queue = device.get_device_queue(queue_family_index, 0);
+        let device = unsafe { instance.create_device(physical_device, &device_create_info, None)? };
+        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
         Ok((device, queue))
     }
@@ -956,18 +1007,18 @@ impl VulkanContext {
 impl VulkanSwapchain {
     unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);
-        let surface_caps = context
+        let surface_caps = unsafe { context
             .surface_loader
-            .get_physical_device_surface_capabilities(context.physical_device, context.surface)?;
-        let formats = context
+            .get_physical_device_surface_capabilities(context.physical_device, context.surface)? };
+        let formats = unsafe { context
             .surface_loader
-            .get_physical_device_surface_formats(context.physical_device, context.surface)?;
+            .get_physical_device_surface_formats(context.physical_device, context.surface)? };
 
         let chosen = Self::choose_surface_format(&formats);
         let format = chosen.format;
         let extent = Self::choose_extent(&surface_caps, window);
         let image_count = Self::choose_image_count(&surface_caps);
-        let present_mode = Self::choose_present_mode(context, vsync);
+        let present_mode = unsafe { Self::choose_present_mode(context, vsync) };
 
         let create_info = vk::SwapchainCreateInfoKHR {
             surface: context.surface,
@@ -985,9 +1036,9 @@ impl VulkanSwapchain {
             ..Default::default()
         };
 
-        let swapchain = loader.create_swapchain(&create_info, None)?;
-        let images = loader.get_swapchain_images(swapchain)?;
-        let views = Self::create_image_views(&context.device, &images, format)?;
+        let swapchain = unsafe { loader.create_swapchain(&create_info, None)? };
+        let images = unsafe { loader.get_swapchain_images(swapchain)? };
+        let views = unsafe { Self::create_image_views(&context.device, &images, format)? };
 
         Ok(Self {
             loader,
@@ -1014,9 +1065,9 @@ impl VulkanSwapchain {
         if vsync {
             return vk::PresentModeKHR::FIFO; // always available
         }
-        let modes = context
+        let modes = unsafe { context
             .surface_loader
-            .get_physical_device_surface_present_modes(context.physical_device, context.surface)
+            .get_physical_device_surface_present_modes(context.physical_device, context.surface) }
             .unwrap_or_default();
         if modes.contains(&vk::PresentModeKHR::MAILBOX) {
             vk::PresentModeKHR::MAILBOX
@@ -1069,7 +1120,7 @@ impl VulkanSwapchain {
                     },
                     ..Default::default()
                 };
-                device.create_image_view(&create_info, None)
+                unsafe { device.create_image_view(&create_info, None) }
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -1077,9 +1128,9 @@ impl VulkanSwapchain {
 
     unsafe fn cleanup(&mut self, device: &ash::Device) {
         for &view in &self.views {
-            device.destroy_image_view(view, None);
+            unsafe { device.destroy_image_view(view, None) };
         }
-        self.loader.destroy_swapchain(self.swapchain, None);
+        unsafe { self.loader.destroy_swapchain(self.swapchain, None) };
     }
 }
 
@@ -1096,22 +1147,22 @@ impl VulkanBuffers {
         let indices: [u16; 3] = [0, 1, 2];
 
         // Create vertex buffer with simple host-visible memory for now
-        let (vertex_buffer, vertex_memory) = Self::create_buffer(
+        let (vertex_buffer, vertex_memory) = unsafe { Self::create_buffer(
             &context.device,
             context.physical_device,
             &context.instance,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?;
+        )? };
 
         // Create index buffer
-        let (index_buffer, index_memory) = Self::create_buffer(
+        let (index_buffer, index_memory) = unsafe { Self::create_buffer(
             &context.device,
             context.physical_device,
             &context.instance,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
-        )?;
+        )? };
 
         // Generate 10,000 rectangle instances with pre-computed rotations
         let mut instances = Vec::with_capacity(10000);
@@ -1138,13 +1189,13 @@ impl VulkanBuffers {
         }
 
         // Create instance buffer with simple host-visible memory for now
-        let (instance_buffer, instance_memory) = Self::create_buffer(
+        let (instance_buffer, instance_memory) = unsafe { Self::create_buffer(
             &context.device,
             context.physical_device,
             &context.instance,
             &instances,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?;
+        )? };
 
         // Create storage buffer for compute-generated points (50,000 points)
         const MAX_POINTS: usize = 50000;
@@ -1158,13 +1209,13 @@ impl VulkanBuffers {
             velocity: [0.0, 0.0],
         }; MAX_POINTS];
 
-        let (point_storage_buffer, point_storage_memory) = Self::create_buffer(
+        let (point_storage_buffer, point_storage_memory) = unsafe { Self::create_buffer(
             &context.device,
             context.physical_device,
             &context.instance,
             &point_data,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
-        )?;
+        )? };
 
         Ok(Self {
             vertex_buffer,
@@ -1178,6 +1229,7 @@ impl VulkanBuffers {
         })
     }
 
+    #[allow(dead_code)]
     unsafe fn create_gpu_buffer<T>(
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
@@ -1185,7 +1237,7 @@ impl VulkanBuffers {
         data: &[T],
         usage: vk::BufferUsageFlags,
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer_size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+        let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
         // Create staging buffer (CPU-accessible)
         let staging_buffer_info = vk::BufferCreateInfo {
@@ -1195,10 +1247,10 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let staging_buffer = device.create_buffer(&staging_buffer_info, None)?;
-        let staging_mem_requirements = device.get_buffer_memory_requirements(staging_buffer);
+        let staging_buffer = unsafe { device.create_buffer(&staging_buffer_info, None)? };
+        let staging_mem_requirements = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
 
-        let mem_properties = instance.get_physical_device_memory_properties(physical_device);
+        let mem_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
         let staging_memory_type = Self::find_memory_type(
             staging_mem_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1211,24 +1263,26 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let staging_memory = device.allocate_memory(&staging_alloc_info, None)?;
-        device.bind_buffer_memory(staging_buffer, staging_memory, 0)?;
+        let staging_memory = unsafe { device.allocate_memory(&staging_alloc_info, None)? };
+        unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0)? };
 
         // Copy data to staging buffer
-        let data_ptr = device.map_memory(
+        let data_ptr = unsafe { device.map_memory(
             staging_memory,
             0,
             buffer_size,
             vk::MemoryMapFlags::empty(),
-        )?;
+        )? };
 
-        std::ptr::copy_nonoverlapping(
-            data.as_ptr() as *const u8,
-            data_ptr as *mut u8,
-            buffer_size as usize,
-        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                data_ptr as *mut u8,
+                buffer_size as usize,
+            );
+        }
 
-        device.unmap_memory(staging_memory);
+        unsafe { device.unmap_memory(staging_memory) };
 
         // Create GPU-local buffer
         let buffer_info = vk::BufferCreateInfo {
@@ -1238,8 +1292,8 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let buffer = device.create_buffer(&buffer_info, None)?;
-        let mem_requirements = device.get_buffer_memory_requirements(buffer);
+        let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
+        let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
         let memory_type = Self::find_memory_type(
             mem_requirements.memory_type_bits,
@@ -1253,24 +1307,25 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let buffer_memory = device.allocate_memory(&alloc_info, None)?;
-        device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+        let buffer_memory = unsafe { device.allocate_memory(&alloc_info, None)? };
+        unsafe { device.bind_buffer_memory(buffer, buffer_memory, 0)? };
 
         // Copy from staging to GPU buffer
-        Self::copy_buffer(device, staging_buffer, buffer, buffer_size)?;
+        unsafe { Self::copy_buffer(device, staging_buffer, buffer, buffer_size)? };
 
         // Cleanup staging resources
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_memory, None);
+        unsafe { device.destroy_buffer(staging_buffer, None) };
+        unsafe { device.free_memory(staging_memory, None) };
 
         Ok((buffer, buffer_memory))
     }
 
+    #[allow(dead_code)]
     unsafe fn copy_buffer(
-        device: &ash::Device,
-        src_buffer: vk::Buffer,
-        dst_buffer: vk::Buffer,
-        size: vk::DeviceSize,
+        _device: &ash::Device,
+        _src_buffer: vk::Buffer,
+        _dst_buffer: vk::Buffer,
+        _size: vk::DeviceSize,
     ) -> Result<()> {
         // Note: In a real application, you'd want to use a dedicated transfer queue
         // For simplicity, we're using a simple synchronous copy
@@ -1285,7 +1340,7 @@ impl VulkanBuffers {
         data: &[T],
         usage: vk::BufferUsageFlags,
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer_size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+        let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
         let buffer_info = vk::BufferCreateInfo {
             size: buffer_size,
@@ -1294,10 +1349,10 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let buffer = device.create_buffer(&buffer_info, None)?;
-        let mem_requirements = device.get_buffer_memory_requirements(buffer);
+        let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
+        let mem_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
-        let mem_properties = instance.get_physical_device_memory_properties(physical_device);
+        let mem_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
         let memory_type = Self::find_memory_type(
             mem_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -1310,24 +1365,26 @@ impl VulkanBuffers {
             ..Default::default()
         };
 
-        let buffer_memory = device.allocate_memory(&alloc_info, None)?;
-        device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+        let buffer_memory = unsafe { device.allocate_memory(&alloc_info, None)? };
+        unsafe { device.bind_buffer_memory(buffer, buffer_memory, 0)? };
 
         // Copy data to buffer
-        let data_ptr = device.map_memory(
+        let data_ptr = unsafe { device.map_memory(
             buffer_memory,
             0,
             buffer_size,
             vk::MemoryMapFlags::empty(),
-        )?;
+        )? };
 
-        std::ptr::copy_nonoverlapping(
-            data.as_ptr() as *const u8,
-            data_ptr as *mut u8,
-            buffer_size as usize,
-        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                data_ptr as *mut u8,
+                buffer_size as usize,
+            );
+        }
 
-        device.unmap_memory(buffer_memory);
+        unsafe { device.unmap_memory(buffer_memory) };
 
         Ok((buffer, buffer_memory))
     }
@@ -1348,14 +1405,14 @@ impl VulkanBuffers {
     }
 
     unsafe fn cleanup(&mut self, device: &ash::Device) {
-        device.destroy_buffer(self.vertex_buffer, None);
-        device.free_memory(self.vertex_memory, None);
-        device.destroy_buffer(self.index_buffer, None);
-        device.free_memory(self.index_memory, None);
-        device.destroy_buffer(self.instance_buffer, None);
-        device.free_memory(self.instance_memory, None);
-        device.destroy_buffer(self.point_storage_buffer, None);
-        device.free_memory(self.point_storage_memory, None);
+        unsafe { device.destroy_buffer(self.vertex_buffer, None) };
+        unsafe { device.free_memory(self.vertex_memory, None) };
+        unsafe { device.destroy_buffer(self.index_buffer, None) };
+        unsafe { device.free_memory(self.index_memory, None) };
+        unsafe { device.destroy_buffer(self.instance_buffer, None) };
+        unsafe { device.free_memory(self.instance_memory, None) };
+        unsafe { device.destroy_buffer(self.point_storage_buffer, None) };
+        unsafe { device.free_memory(self.point_storage_memory, None) };
     }
 }
 
@@ -1366,7 +1423,7 @@ impl VulkanPipeline {
         shader_config: &ShaderConfig,
         buffers: &VulkanBuffers,
     ) -> Result<Self> {
-        let render_pass = Self::create_render_pass(&context.device, swapchain.format)?;
+        let render_pass = unsafe { Self::create_render_pass(&context.device, swapchain.format)? };
 
         // Check if we should use compute generation
         let use_compute_generation = shader_config.preset == ShaderPreset::ComputeParticles;
@@ -1374,7 +1431,7 @@ impl VulkanPipeline {
         // Create compute pipeline and descriptor sets first if needed
         let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
             if use_compute_generation {
-                Self::create_compute_pipeline(&context.device, buffers)?
+                unsafe { Self::create_compute_pipeline(&context.device, buffers)? }
             } else {
                 (vk::PipelineLayout::null(), vk::Pipeline::null(), vk::DescriptorSetLayout::null(),
                  vk::DescriptorPool::null(), vk::DescriptorSet::null())
@@ -1382,19 +1439,19 @@ impl VulkanPipeline {
 
         // Create graphics pipeline layout with optional descriptor set layout
         let pipeline_layout = if use_compute_generation {
-            Self::create_graphics_pipeline_layout(&context.device, Some(descriptor_set_layout))?
+            unsafe { Self::create_graphics_pipeline_layout(&context.device, Some(descriptor_set_layout))? }
         } else {
-            Self::create_graphics_pipeline_layout(&context.device, None)?
+            unsafe { Self::create_graphics_pipeline_layout(&context.device, None)? }
         };
 
-        let (pipeline, has_geometry_shader) = Self::create_graphics_pipeline(
+        let (pipeline, has_geometry_shader) = unsafe { Self::create_graphics_pipeline(
             &context.device,
             render_pass,
             pipeline_layout,
             swapchain,
             shader_config,
-        )?;
-        let framebuffers = Self::create_framebuffers(&context.device, render_pass, swapchain)?;
+        )? };
+        let framebuffers = unsafe { Self::create_framebuffers(&context.device, render_pass, swapchain)? };
 
         Ok(Self {
             render_pass,
@@ -1430,7 +1487,6 @@ impl VulkanPipeline {
         let color_attachment_ref = vk::AttachmentReference {
             attachment: 0,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            ..Default::default()
         };
 
         let subpass = vk::SubpassDescription {
@@ -1448,7 +1504,7 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        Ok(device.create_render_pass(&create_info, None)?)
+        Ok(unsafe { device.create_render_pass(&create_info, None)? })
     }
 
     unsafe fn create_graphics_pipeline_layout(
@@ -1477,30 +1533,31 @@ impl VulkanPipeline {
             }
         };
 
-        Ok(device.create_pipeline_layout(&create_info, None)?)
+        Ok(unsafe { device.create_pipeline_layout(&create_info, None)? })
     }
 
     unsafe fn create_graphics_pipeline(
         device: &ash::Device,
         render_pass: vk::RenderPass,
         pipeline_layout: vk::PipelineLayout,
-        swapchain: &VulkanSwapchain,
+        _swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
     ) -> Result<(vk::Pipeline, bool)> {
         println!("Loading shader preset: {:?}", shader_config.preset);
         let shader_sources = ShaderSources::load_from_config(shader_config)?;
 
         println!("Compiling shaders...");
-        let vert_code = Self::compile_shader(&shader_sources.vertex, shaderc::ShaderKind::Vertex)?;
-        let frag_code =
-            Self::compile_shader(&shader_sources.fragment, shaderc::ShaderKind::Fragment)?;
+        let vert_code = unsafe { Self::compile_shader(&shader_sources.vertex, shaderc::ShaderKind::Vertex)? };
+        let frag_code = unsafe {
+            Self::compile_shader(&shader_sources.fragment, shaderc::ShaderKind::Fragment)?
+        };
 
-        let vert_module = Self::create_shader_module(device, &vert_code)?;
-        let frag_module = Self::create_shader_module(device, &frag_code)?;
+        let vert_module = unsafe { Self::create_shader_module(device, &vert_code)? };
+        let frag_module = unsafe { Self::create_shader_module(device, &frag_code)? };
 
         let (geom_module, has_geometry) = if let Some(ref geometry_source) = shader_sources.geometry {
-            let geom_code = Self::compile_shader(geometry_source, shaderc::ShaderKind::Geometry)?;
-            (Some(Self::create_shader_module(device, &geom_code)?), true)
+            let geom_code = unsafe { Self::compile_shader(geometry_source, shaderc::ShaderKind::Geometry)? };
+            (Some(unsafe { Self::create_shader_module(device, &geom_code)? }), true)
         } else {
             (None, false)
         };
@@ -1667,15 +1724,15 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let pipelines = device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+        let pipelines = unsafe { device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
             .map_err(|e| e.1)?;
 
-        device.destroy_shader_module(vert_module, None);
+        unsafe { device.destroy_shader_module(vert_module, None) };
         if let Some(geom_mod) = geom_module {
-            device.destroy_shader_module(geom_mod, None);
+            unsafe { device.destroy_shader_module(geom_mod, None) };
         }
-        device.destroy_shader_module(frag_module, None);
+        unsafe { device.destroy_shader_module(frag_module, None) };
 
         Ok((pipelines[0], has_geometry))
     }
@@ -1697,7 +1754,7 @@ impl VulkanPipeline {
             p_code: code.as_ptr(),
             ..Default::default()
         };
-        Ok(device.create_shader_module(&create_info, None)?)
+        Ok(unsafe { device.create_shader_module(&create_info, None)? })
     }
 
     unsafe fn create_framebuffers(
@@ -1718,7 +1775,7 @@ impl VulkanPipeline {
                     layers: 1,
                     ..Default::default()
                 };
-                device.create_framebuffer(&create_info, None)
+                unsafe { device.create_framebuffer(&create_info, None) }
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -1743,7 +1800,7 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let descriptor_set_layout = device.create_descriptor_set_layout(&layout_info, None)?;
+        let descriptor_set_layout = unsafe { device.create_descriptor_set_layout(&layout_info, None)? };
 
         // Create pipeline layout with push constants and descriptor set
         let push_constant_range = vk::PushConstantRange {
@@ -1760,12 +1817,12 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
 
         // Compile compute shader
         let compute_source = include_str!("../shaders/point_generator.comp");
-        let compute_code = Self::compile_shader(compute_source, shaderc::ShaderKind::Compute)?;
-        let compute_module = Self::create_shader_module(device, &compute_code)?;
+        let compute_code = unsafe { Self::compile_shader(compute_source, shaderc::ShaderKind::Compute)? };
+        let compute_module = unsafe { Self::create_shader_module(device, &compute_code)? };
 
         // Create compute pipeline
         let entry_name = CString::new("main")?;
@@ -1780,8 +1837,8 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let pipeline = device
-            .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+        let pipeline = unsafe { device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
             .map_err(|e| e.1)?[0];
 
         // Create descriptor pool
@@ -1798,7 +1855,7 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
 
         // Allocate descriptor set
         let alloc_info = vk::DescriptorSetAllocateInfo {
@@ -1808,7 +1865,7 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
         let descriptor_set = descriptor_sets[0];
 
         // Update descriptor set with storage buffer
@@ -1828,10 +1885,10 @@ impl VulkanPipeline {
             ..Default::default()
         };
 
-        device.update_descriptor_sets(&[write_descriptor_set], &[]);
+        unsafe { device.update_descriptor_sets(&[write_descriptor_set], &[]) };
 
         // Cleanup shader module
-        device.destroy_shader_module(compute_module, None);
+        unsafe { device.destroy_shader_module(compute_module, None) };
 
         Ok((pipeline_layout, pipeline, descriptor_set_layout, descriptor_pool, descriptor_set))
     }
@@ -1842,13 +1899,13 @@ impl VulkanPipeline {
         swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
     ) -> Result<()> {
-        let (pipeline, has_geometry_shader) = Self::create_graphics_pipeline(
+        let (pipeline, has_geometry_shader) = unsafe { Self::create_graphics_pipeline(
             &context.device,
             self.render_pass,
             self.pipeline_layout,
             swapchain,
             shader_config,
-        )?;
+        )? };
         self.pipeline = pipeline;
         self.has_geometry_shader = has_geometry_shader;
         Ok(())
@@ -1859,19 +1916,19 @@ impl VulkanPipeline {
         device: &ash::Device,
         swapchain: &VulkanSwapchain,
     ) -> Result<()> {
-        self.framebuffers = Self::create_framebuffers(device, self.render_pass, swapchain)?;
+        self.framebuffers = unsafe { Self::create_framebuffers(device, self.render_pass, swapchain)? };
         Ok(())
     }
 
     unsafe fn cleanup_framebuffers(&mut self, device: &ash::Device) {
         for &framebuffer in &self.framebuffers {
-            device.destroy_framebuffer(framebuffer, None);
+            unsafe { device.destroy_framebuffer(framebuffer, None) };
         }
         self.framebuffers.clear();
     }
 
     unsafe fn cleanup_pipeline(&mut self, device: &ash::Device) {
-        device.destroy_pipeline(self.pipeline, None);
+        unsafe { device.destroy_pipeline(self.pipeline, None) };
     }
 }
 
@@ -1883,7 +1940,7 @@ impl VulkanCommands {
             ..Default::default()
         };
 
-        let pool = context.device.create_command_pool(&pool_info, None)?;
+        let pool = unsafe { context.device.create_command_pool(&pool_info, None)? };
 
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool: pool,
@@ -1892,7 +1949,7 @@ impl VulkanCommands {
             ..Default::default()
         };
 
-        let buffers = context.device.allocate_command_buffers(&alloc_info)?;
+        let buffers = unsafe { context.device.allocate_command_buffers(&alloc_info)? };
 
         Ok(Self {
             pool,
@@ -1918,9 +1975,9 @@ impl VulkanSync {
         };
 
         Ok(Self {
-            image_available: context.device.create_semaphore(&semaphore_info, None)?,
-            render_finished: context.device.create_semaphore(&semaphore_info, None)?,
-            in_flight: context.device.create_fence(&fence_info, None)?,
+            image_available: unsafe { context.device.create_semaphore(&semaphore_info, None)? },
+            render_finished: unsafe { context.device.create_semaphore(&semaphore_info, None)? },
+            in_flight: unsafe { context.device.create_fence(&fence_info, None)? },
         })
     }
 }
@@ -1976,6 +2033,12 @@ pub struct InputManager {
     osc_manager: OscManager, // Add this line
 }
 
+impl Default for InputManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputManager {
     pub fn new() -> Self {
         Self {
@@ -2000,7 +2063,7 @@ impl InputManager {
     pub fn setup_osc(&mut self, config: &OscConfig) {
         self.osc_manager = OscManager::new(config.clone());
         if let Err(e) = self.osc_manager.start() {
-            eprintln!("OSC setup failed: {}", e);
+            eprintln!("OSC setup failed: {e}");
         }
     }
 
@@ -2032,14 +2095,14 @@ impl InputManager {
         match self.try_setup_audio(config) {
             Ok(stream) => {
                 if let Err(e) = stream.play() {
-                    eprintln!("Failed to start audio stream: {}", e);
+                    eprintln!("Failed to start audio stream: {e}");
                     return;
                 }
                 self._audio_stream = Some(stream);
                 println!("Audio input connected successfully!");
             }
             Err(e) => {
-                eprintln!("Audio setup failed: {}", e);
+                eprintln!("Audio setup failed: {e}");
             }
         }
     }
@@ -2073,7 +2136,7 @@ impl InputManager {
                 }
             },
             move |err| {
-                eprintln!("Audio input error: {}", err);
+                eprintln!("Audio input error: {err}");
             },
             None,
         )?;
@@ -2091,7 +2154,7 @@ impl InputManager {
                 .find(|device| {
                     device
                         .name()
-                        .map_or(false, |name| name.contains(device_name))
+                        .is_ok_and(|name| name.contains(device_name))
                 })
                 .or_else(|| host.default_input_device())
         } else {
@@ -2119,8 +2182,7 @@ impl InputManager {
                     if supported_config.min_sample_rate().0 <= desired_rate
                         && desired_rate <= supported_config.max_sample_rate().0
                     {
-                        stream_config = supported_config
-                            .clone()
+                        stream_config = (*supported_config)
                             .with_sample_rate(cpal::SampleRate(desired_rate))
                             .config();
                         break;
@@ -2148,8 +2210,10 @@ pub struct App {
     is_fullscreen: bool,
     current_shader_index: usize,
     shader_presets: Vec<ShaderPreset>,
+    #[allow(dead_code)]
     frame_times: VecDeque<Instant>,
     last_fps_log: Instant,
+    #[allow(dead_code)]
     frame_count: u64,
     frame_count_since_log: u32,
     cached_window_size: (u32, u32),
@@ -2245,9 +2309,9 @@ impl App {
         self.config.shader.preset = new_preset.clone();
 
         if let Some(gfx) = &mut self.gfx {
-            println!("Switching to shader: {:?}", new_preset);
+            println!("Switching to shader: {new_preset:?}");
             if let Err(e) = unsafe { gfx.recreate_pipeline(&self.config.shader) } {
-                eprintln!("Failed to switch shader: {}", e);
+                eprintln!("Failed to switch shader: {e}");
             }
         }
     }
@@ -2260,7 +2324,7 @@ impl App {
                     println!("Shaders reloaded successfully!");
                 }
                 Err(e) => {
-                    eprintln!("Failed to reload shaders: {}", e);
+                    eprintln!("Failed to reload shaders: {e}");
                     println!("Check your shader files for compilation errors.");
                 }
             }
@@ -2378,7 +2442,7 @@ impl ApplicationHandler for App {
                     println!("Window resized to {}x{}", new_size.width, new_size.height);
                     if let (Some(gfx), Some(window)) = (&mut self.gfx, &self.window) {
                         if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
-                            eprintln!("Failed to recreate swapchain: {}", e);
+                            eprintln!("Failed to recreate swapchain: {e}");
                             event_loop.exit();
                         }
                     }
@@ -2434,7 +2498,7 @@ impl ApplicationHandler for App {
                                 // Swapchain needs recreation
                                 if let Some(window) = &self.window {
                                     if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
-                                        eprintln!("Failed to recreate swapchain: {}", e);
+                                        eprintln!("Failed to recreate swapchain: {e}");
                                         event_loop.exit();
                                     }
                                 }
@@ -2443,7 +2507,7 @@ impl ApplicationHandler for App {
                                 // Draw succeeded normally
                             }
                             Err(e) => {
-                                eprintln!("Draw error: {}", e);
+                                eprintln!("Draw error: {e}");
                                 event_loop.exit();
                             }
                         }
@@ -2494,7 +2558,7 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + frame_time));
 
     let mut app = App::new(config);
-    event_loop.run_app(&mut app);
+    let _ = event_loop.run_app(&mut app);
 
     Ok(())
 }

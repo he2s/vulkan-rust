@@ -28,15 +28,12 @@ pub struct MidiState {
 
 impl Default for MidiState {
     fn default() -> Self {
-        const ZERO: AtomicU32 = AtomicU32::new(0);
-        const HALF: AtomicU32 = AtomicU32::new(0x3F000000); // 0.5f32.to_bits()
-
         Self {
-            notes: [ZERO; MAX_NOTES],
+            notes: [const { AtomicU32::new(0) }; MAX_NOTES],
             last_note: AtomicU8::new(60),
             note_count: AtomicU32::new(0),
             _pad1: [0; 52],
-            controllers: [HALF; MAX_CONTROLLERS],
+            controllers: [const { AtomicU32::new(0x3F000000) }; MAX_CONTROLLERS], // 0.5f32.to_bits()
             _pad2: [0; 64],
             pitch_bend: AtomicU32::new(0),
         }
@@ -61,6 +58,7 @@ impl MidiState {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn get_controller(&self, index: usize) -> f32 {
         debug_assert!(index < MAX_CONTROLLERS);
         unsafe {
@@ -122,6 +120,7 @@ impl MidiState {
     }
 
     #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
     pub fn get_active_notes(&self, out: &mut Vec<(u8, f32)>) {
         out.clear();
 
@@ -163,6 +162,7 @@ impl MidiManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_state(&self) -> Arc<MidiState> {
         Arc::clone(&self.state)
     }
@@ -196,7 +196,7 @@ impl MidiManager {
         let port = if let Some(name_sub) = &config.port_name {
             ports
                 .iter()
-                .find(|p| midi_in.port_name(p).map_or(false, |n| n.contains(name_sub)))
+                .find(|p| midi_in.port_name(p).is_ok_and(|n| n.contains(name_sub)))
                 .ok_or("Configured MIDI port not found")?
         } else {
             &ports[0]
@@ -315,6 +315,7 @@ impl MidiState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clone_values(&self) -> MidiStateSnapshot {
         self.snapshot()
     }

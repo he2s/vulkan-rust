@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
-    mem::MaybeUninit,
     net::{SocketAddr, UdpSocket},
     sync::{
         Arc,
@@ -169,7 +168,7 @@ impl OscManager {
             .map_err(|e| anyhow!("Failed to bind OSC socket to {}: {}", socket_addr, e))?;
 
         if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(1))) {
-            eprintln!("Warning: Failed to set socket timeout: {}", e);
+            eprintln!("Warning: Failed to set socket timeout: {e}");
         }
 
         #[cfg(unix)]
@@ -188,7 +187,7 @@ impl OscManager {
             }
         }
 
-        println!("OSC server listening on {}", socket_addr);
+        println!("OSC server listening on {socket_addr}");
         println!(
             "OSC channels: {} -> channel1, {} -> channel2",
             self.config.channel1_path, self.config.channel2_path
@@ -268,7 +267,7 @@ impl OscManager {
                     if e.kind() != std::io::ErrorKind::TimedOut
                         && e.kind() != std::io::ErrorKind::WouldBlock
                     {
-                        eprintln!("OSC socket error: {}", e);
+                        eprintln!("OSC socket error: {e}");
                         break;
                     }
                 }
@@ -351,6 +350,7 @@ impl OscManager {
 }
 
 struct FastOscParser {
+    #[allow(dead_code)]
     workspace: Vec<u8>,
 }
 

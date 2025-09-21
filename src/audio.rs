@@ -264,9 +264,7 @@ impl AudioState {
         let fft_len = self
             .windowing_buffer
             .len()
-            .next_power_of_two()
-            .max(MIN_FFT_SIZE)
-            .min(MAX_FFT_SIZE);
+            .next_power_of_two().clamp(MIN_FFT_SIZE, MAX_FFT_SIZE);
         self.windowing_buffer.resize(fft_len, 0.0);
 
         Self::apply_hann_window(&mut self.windowing_buffer);
@@ -339,6 +337,7 @@ impl AudioState {
             SMOOTHING_FACTOR * self.levels.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
     }
 
+    #[allow(dead_code)]
     pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
         self.mono_conversion_buffer.clear();
         self.mono_conversion_buffer
