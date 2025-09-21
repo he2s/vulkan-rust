@@ -5,7 +5,8 @@
       "Bash(cargo run:*)",
       "Bash(timeout 5s cargo run --release)",
       "Bash(timeout 3s cargo run --release)",
-      "Bash(timeout 2s cargo run --release)"
+      "Bash(timeout 2s cargo run --release)",
+      "Bash(cargo:*)"
     ],
     "deny": [],
     "ask": []

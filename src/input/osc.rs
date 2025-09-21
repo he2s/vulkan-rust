@@ -227,13 +227,10 @@ impl OscManager {
         while !should_stop.load(Ordering::Relaxed) {
             match socket.recv(&mut buffer) {
                 Ok(size) => {
-                    println!("{:?}", 1);
                     if size > 0 && !buffer[..8.min(size)].starts_with(OSC_BUNDLE_TAG) {
-                        println!("{:?}", 2);
                         if let Some((channel_idx, value)) =
                             parser.fast_parse_single_message(&buffer[..size], &channel_lookup)
                         {
-                            println!("{:?}", 3);
                             match channel_idx {
                                 0 => {
                                     let current = state.get_channel1();
@@ -242,7 +239,6 @@ impl OscManager {
                                     } else {
                                         current * smoothing + value * inv_smoothing
                                     };
-                                    println!("{:?}", new_value);
                                     state.set_channel1(new_value);
                                 }
                                 1 => {

@@ -266,6 +266,7 @@ impl DeviceLister {
 // shader management
 pub struct ShaderSources {
     pub vertex: String,
+    pub geometry: Option<String>,
     pub fragment: String,
 }
 
@@ -288,6 +289,7 @@ impl ShaderSources {
             if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
                 return Ok(Self {
                     vertex: vs,
+                    geometry: None,
                     fragment: fs,
                 });
             }
@@ -296,18 +298,22 @@ impl ShaderSources {
         match preset {
             ShaderPreset::Torus => Ok(Self {
                 vertex: include_str!("../shaders/fullscreen.vert").to_string(),
+                geometry: None,
                 fragment: include_str!("../shaders/gradient.frag").to_string(),
             }),
             ShaderPreset::Terrain => Ok(Self {
                 vertex: include_str!("../shaders/terrain.vert").to_string(),
+                geometry: None,
                 fragment: include_str!("../shaders/terrain.frag").to_string(),
             }),
             ShaderPreset::Crystal => Ok(Self {
-                vertex: include_str!("../shaders/crystal.vert").to_string(),
+                vertex: include_str!("../shaders/points.vert").to_string(),
+                geometry: Some(include_str!("../shaders/example.geom").to_string()),
                 fragment: include_str!("../shaders/crystal.frag").to_string(),
             }),
             ShaderPreset::Stars => Ok(Self {
                 vertex: include_str!("../shaders/stars.vert").to_string(),
+                geometry: None,
                 fragment: include_str!("../shaders/stars.frag").to_string(),
             }),
             ShaderPreset::Custom => Err(anyhow!("Custom shader requires paths")),
@@ -317,6 +323,15 @@ impl ShaderSources {
     pub fn load_from_files(vertex_path: &str, fragment_path: &str) -> Result<Self> {
         Ok(Self {
             vertex: fs::read_to_string(vertex_path)?,
+            geometry: None,
+            fragment: fs::read_to_string(fragment_path)?,
+        })
+    }
+
+    pub fn load_from_files_with_geometry(vertex_path: &str, geometry_path: &str, fragment_path: &str) -> Result<Self> {
+        Ok(Self {
+            vertex: fs::read_to_string(vertex_path)?,
+            geometry: Some(fs::read_to_string(geometry_path)?),
             fragment: fs::read_to_string(fragment_path)?,
         })
     }
@@ -791,6 +806,7 @@ pub struct VulkanPipeline {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
+    has_geometry_shader: bool,
 }
 
 pub struct VulkanCommands {
@@ -976,24 +992,32 @@ impl Gfx {
             ),
         );
 
-        // Bind vertex and instance buffers
-        let vertex_buffers = [self.buffers.vertex_buffer];
-        let instance_buffers = [self.buffers.instance_buffer];
-        let offsets = [0];
+        // Choose drawing method based on geometry shader presence
+        if self.pipeline.has_geometry_shader {
+            // For geometry shader: draw points that will be expanded into triangles
+            // No need for index buffer or instance buffer
+            self.context.device.cmd_draw(cmd_buffer, 400, 1, 0, 0); // 20x20 grid of points
+        } else {
+            // Traditional indexed drawing with instances
+            // Bind vertex and instance buffers
+            let vertex_buffers = [self.buffers.vertex_buffer];
+            let instance_buffers = [self.buffers.instance_buffer];
+            let offsets = [0];
 
-        self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
-        self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 1, &instance_buffers, &offsets);
+            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 1, &instance_buffers, &offsets);
 
-        // Bind index buffer
-        self.context.device.cmd_bind_index_buffer(
-            cmd_buffer,
-            self.buffers.index_buffer,
-            0,
-            vk::IndexType::UINT16
-        );
+            // Bind index buffer
+            self.context.device.cmd_bind_index_buffer(
+                cmd_buffer,
+                self.buffers.index_buffer,
+                0,
+                vk::IndexType::UINT16
+            );
 
-        // Draw indexed: 6 indices per rectangle, 10,000 instances (40,000 vertices instead of 60,000)
-        self.context.device.cmd_draw_indexed(cmd_buffer, 6, 10000, 0, 0, 0);
+            // Draw indexed: 6 indices per rectangle, 10,000 instances (40,000 vertices instead of 60,000)
+            self.context.device.cmd_draw_indexed(cmd_buffer, 6, 10000, 0, 0, 0);
+        }
         self.context.device.cmd_end_render_pass(cmd_buffer);
         self.context.device.end_command_buffer(cmd_buffer)?;
 
@@ -1560,7 +1584,7 @@ impl VulkanPipeline {
     ) -> Result<Self> {
         let render_pass = Self::create_render_pass(&context.device, swapchain.format)?;
         let pipeline_layout = Self::create_pipeline_layout(&context.device)?;
-        let pipeline = Self::create_graphics_pipeline(
+        let (pipeline, has_geometry_shader) = Self::create_graphics_pipeline(
             &context.device,
             render_pass,
             pipeline_layout,
@@ -1574,6 +1598,7 @@ impl VulkanPipeline {
             pipeline_layout,
             pipeline,
             framebuffers,
+            has_geometry_shader,
         })
     }
 
@@ -1639,7 +1664,7 @@ impl VulkanPipeline {
         pipeline_layout: vk::PipelineLayout,
         swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
-    ) -> Result<vk::Pipeline> {
+    ) -> Result<(vk::Pipeline, bool)> {
         println!("Loading shader preset: {:?}", shader_config.preset);
         let shader_sources = ShaderSources::load_from_config(shader_config)?;
 
@@ -1651,21 +1676,38 @@ impl VulkanPipeline {
         let vert_module = Self::create_shader_module(device, &vert_code)?;
         let frag_module = Self::create_shader_module(device, &frag_code)?;
 
+        let (geom_module, has_geometry) = if let Some(ref geometry_source) = shader_sources.geometry {
+            let geom_code = Self::compile_shader(geometry_source, shaderc::ShaderKind::Geometry)?;
+            (Some(Self::create_shader_module(device, &geom_code)?), true)
+        } else {
+            (None, false)
+        };
+
         let entry_name = CString::new("main")?;
-        let shader_stages = [
+        let mut shader_stages = vec![
             vk::PipelineShaderStageCreateInfo {
                 stage: vk::ShaderStageFlags::VERTEX,
                 module: vert_module,
                 p_name: entry_name.as_ptr(),
                 ..Default::default()
             },
-            vk::PipelineShaderStageCreateInfo {
-                stage: vk::ShaderStageFlags::FRAGMENT,
-                module: frag_module,
+        ];
+
+        if let Some(geom_mod) = geom_module {
+            shader_stages.push(vk::PipelineShaderStageCreateInfo {
+                stage: vk::ShaderStageFlags::GEOMETRY,
+                module: geom_mod,
                 p_name: entry_name.as_ptr(),
                 ..Default::default()
-            },
-        ];
+            });
+        }
+
+        shader_stages.push(vk::PipelineShaderStageCreateInfo {
+            stage: vk::ShaderStageFlags::FRAGMENT,
+            module: frag_module,
+            p_name: entry_name.as_ptr(),
+            ..Default::default()
+        });
 
         let vertex_binding_descriptions = [
             // Vertex data binding
@@ -1742,7 +1784,11 @@ impl VulkanPipeline {
             ..Default::default()
         };
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
-            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+            topology: if has_geometry {
+                vk::PrimitiveTopology::POINT_LIST
+            } else {
+                vk::PrimitiveTopology::TRIANGLE_LIST
+            },
             ..Default::default()
         };
 
@@ -1804,9 +1850,12 @@ impl VulkanPipeline {
             .map_err(|e| e.1)?;
 
         device.destroy_shader_module(vert_module, None);
+        if let Some(geom_mod) = geom_module {
+            device.destroy_shader_module(geom_mod, None);
+        }
         device.destroy_shader_module(frag_module, None);
 
-        Ok(pipelines[0])
+        Ok((pipelines[0], has_geometry))
     }
 
     unsafe fn compile_shader(source: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>> {
@@ -1859,13 +1908,15 @@ impl VulkanPipeline {
         swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
     ) -> Result<()> {
-        self.pipeline = Self::create_graphics_pipeline(
+        let (pipeline, has_geometry_shader) = Self::create_graphics_pipeline(
             &context.device,
             self.render_pass,
             self.pipeline_layout,
             swapchain,
             shader_config,
         )?;
+        self.pipeline = pipeline;
+        self.has_geometry_shader = has_geometry_shader;
         Ok(())
     }
 
