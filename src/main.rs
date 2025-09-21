@@ -1,3 +1,8 @@
+// ============================================================================
+// IMPORTS AND MODULE DECLARATIONS
+// This section will become the module import structure for future modularization
+// ============================================================================
+
 // use statements
 use crate::config::config::{
     Args, AudioConfig, Config, ShaderConfig, ShaderPreset,
@@ -37,10 +42,92 @@ use winit::{
 mod config;
 mod input;
 
+// ============================================================================
+// CORE TYPES AND CONSTANTS
+// This section contains fundamental constants and data structures used throughout the application
+// These will remain here as they're shared across multiple modules
+// ============================================================================
+
 // constants
 const FRAME_TIME_VSYNC: Duration = Duration::from_millis(16);
 const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
 
+// state management
+#[derive(Clone, Debug)]
+pub struct FrameState {
+    pub midi: MidiStateSnapshot,
+    pub audio_levels: AudioLevels,
+    pub osc: OscStateSnapshot,
+    pub beat: BeatState,  // Add this field
+}
+
+// vertex data structures
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Vertex {
+    pos: [f32; 2],
+    uv: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InstanceData {
+    offset: [f32; 2],
+    scale: [f32; 2],
+    rotation_cos: f32,    // Pre-computed cos
+    rotation_sin: f32,    // Pre-computed sin
+    color_index: u32,     // Back to u32 for alignment
+    _padding: u32,        // Alignment padding
+}
+
+// push constants
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PushConstants {
+    time: f32,
+    mouse_x: u32,
+    mouse_y: u32,
+    mouse_pressed: u32,
+    note_velocity: f32,
+    pitch_bend: f32,
+    cc1: f32,
+    cc74: f32,
+    note_count: u32,
+    last_note: u32,
+    osc_ch1: f32,
+    osc_ch2: f32,
+    render_w: u32,
+    render_h: u32,
+    bpm: f32,
+    time_to_next_beat: f32,
+    time_since_last_beat: f32,
+    beats_per_bar: u32,
+    max_points: u32,
+    fft_size: u32,
+    audio_intensity: f32,
+    bass_level: f32,
+    mid_level: f32,
+    high_level: f32,
+}
+
+// Point data structure matching the compute shader
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PointData {
+    position: [f32; 2],
+    size: f32,
+    intensity: f32,
+    color: [f32; 4],
+    rotation: f32,
+    point_type: u32,
+    velocity: [f32; 2],
+}
+
+// ============================================================================
+// UTILITIES MODULE
+// This section will become the utilities module containing helper functions and device enumeration
+// Will be moved to utilities.rs in future modularization
+// ============================================================================
 
 // device lister
 pub struct DeviceLister;
@@ -348,79 +435,13 @@ impl ShaderSources {
     }
 }
 
-// state management
-#[derive(Clone, Debug)]
-pub struct FrameState {
-    pub midi: MidiStateSnapshot,
-    pub audio_levels: AudioLevels,
-    pub osc: OscStateSnapshot,
-    pub beat: BeatState,  // Add this field
-}
+// ============================================================================
+// GRAPHICS MODULE
+// This section contains all Vulkan graphics structures and implementations
+// Will be moved to graphics.rs in future modularization with sub-modules for each component
+// ============================================================================
 
-
-// vertex data structures
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Vertex {
-    pos: [f32; 2],
-    uv: [f32; 2],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct InstanceData {
-    offset: [f32; 2],
-    scale: [f32; 2],
-    rotation_cos: f32,    // Pre-computed cos
-    rotation_sin: f32,    // Pre-computed sin
-    color_index: u32,     // Back to u32 for alignment
-    _padding: u32,        // Alignment padding
-}
-
-// push constants
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PushConstants {
-    time: f32,
-    mouse_x: u32,
-    mouse_y: u32,
-    mouse_pressed: u32,
-    note_velocity: f32,
-    pitch_bend: f32,
-    cc1: f32,
-    cc74: f32,
-    note_count: u32,
-    last_note: u32,
-    osc_ch1: f32,
-    osc_ch2: f32,
-    render_w: u32,
-    render_h: u32,
-    bpm: f32,
-    time_to_next_beat: f32,
-    time_since_last_beat: f32,
-    beats_per_bar: u32,
-    max_points: u32,
-    fft_size: u32,
-    audio_intensity: f32,
-    bass_level: f32,
-    mid_level: f32,
-    high_level: f32,
-}
-
-// Point data structure matching the compute shader
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct PointData {
-    position: [f32; 2],
-    size: f32,
-    intensity: f32,
-    color: [f32; 4],
-    rotation: f32,
-    point_type: u32,
-    velocity: [f32; 2],
-}
-
-// vulkan graphics
+// vulkan graphics structures
 pub struct VulkanContext {
     _entry: Entry,
     instance: ash::Instance,
@@ -499,6 +520,7 @@ pub struct Gfx {
     vsync: bool,
 }
 
+// Gfx implementation - main graphics interface
 impl Gfx {
     /// # Safety
     /// This function is unsafe because it creates Vulkan resources and calls unsafe Vulkan functions.
@@ -886,6 +908,7 @@ impl Gfx {
     }
 }
 
+// VulkanContext implementation - handles Vulkan instance and device creation
 impl VulkanContext {
     unsafe fn new(window: &Window) -> Result<Self> {
         let entry = Entry::linked();
@@ -1004,6 +1027,7 @@ impl VulkanContext {
     }
 }
 
+// VulkanSwapchain implementation - handles swapchain creation and management
 impl VulkanSwapchain {
     unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);
@@ -1134,6 +1158,7 @@ impl VulkanSwapchain {
     }
 }
 
+// VulkanBuffers implementation - handles vertex, index, and storage buffers
 impl VulkanBuffers {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
         // Triangle vertices for instanced rendering
@@ -1416,6 +1441,7 @@ impl VulkanBuffers {
     }
 }
 
+// VulkanPipeline implementation - handles render and compute pipeline creation
 impl VulkanPipeline {
     unsafe fn new(
         context: &VulkanContext,
@@ -1932,6 +1958,7 @@ impl VulkanPipeline {
     }
 }
 
+// VulkanCommands implementation - handles command buffers
 impl VulkanCommands {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let pool_info = vk::CommandPoolCreateInfo {
@@ -1966,6 +1993,7 @@ impl VulkanCommands {
     }
 }
 
+// VulkanSync implementation - handles synchronization objects
 impl VulkanSync {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -1982,6 +2010,7 @@ impl VulkanSync {
     }
 }
 
+// Drop implementation for cleanup
 impl Drop for Gfx {
     fn drop(&mut self) {
         unsafe {
@@ -2022,6 +2051,12 @@ impl Drop for Gfx {
         }
     }
 }
+
+// ============================================================================
+// INPUT MODULE
+// This section handles all input management including MIDI, audio, and OSC
+// Will be moved to input.rs in future modularization
+// ============================================================================
 
 // input management
 pub struct InputManager {
@@ -2197,6 +2232,12 @@ impl InputManager {
         Ok(stream_config)
     }
 }
+
+// ============================================================================
+// APPLICATION MODULE
+// This section contains the main application structure and window event handling
+// Will be moved to app.rs in future modularization
+// ============================================================================
 
 // main app
 pub struct App {
@@ -2532,6 +2573,11 @@ impl ApplicationHandler for App {
         }
     }
 }
+
+// ============================================================================
+// MAIN FUNCTION
+// This is the application entry point and will remain here
+// ============================================================================
 
 // main
 fn main() -> Result<()> {
