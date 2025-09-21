@@ -687,7 +687,6 @@ impl AudioState {
         &self.mono_conversion_buffer
     }
 
-    // Optimized method that converts and pushes in one operation to avoid borrow conflicts
     pub fn push_audio_data(&mut self, data: &[f32], channels: usize, sample_rate: u32) {
         if channels == 1 {
             self.push_samples(data, sample_rate);
@@ -714,7 +713,7 @@ impl AudioState {
     }
 }
 
-// push constants structure
+// push constants
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PushConstants {
@@ -1610,6 +1609,8 @@ impl Drop for Gfx {
 pub struct InputManager {
     midi_manager: MidiManager,
     audio_state: Arc<Mutex<AudioState>>,
+    cached_audio_levels: AudioLevels,
+    cached_beat_state: BeatState,
     _audio_stream: Option<cpal::Stream>,
     osc_manager: OscManager, // Add this line
 }
@@ -1619,6 +1620,8 @@ impl InputManager {
         Self {
             midi_manager: MidiManager::new(),
             audio_state: Arc::new(Mutex::new(AudioState::new())),
+            cached_audio_levels: AudioLevels::default(),
+            cached_beat_state: BeatState::default(),
             _audio_stream: None,
             osc_manager: OscManager::new(OscConfig::default()),
         }
@@ -1640,25 +1643,22 @@ impl InputManager {
         }
     }
 
-    pub fn get_frame_state(&self) -> FrameState {
+    pub fn get_frame_state(&mut self) -> FrameState {
         let midi = self.midi_manager.get_state_snapshot();
         let osc = self.osc_manager.get_state();
 
-        // Use try_lock for better performance under contention
-        let (audio_levels, beat_state) = if let Ok(mut audio_state) = self.audio_state.try_lock() {
-            let levels = audio_state.analyze_and_get_levels();
-            let beat = audio_state.get_simple_beat_state();
-            (levels, beat)
-        } else {
-            // Return default values if audio state is locked (avoid blocking)
-            (AudioLevels::default(), BeatState::default())
-        };
+        // Try to update cached audio data - never block the render thread
+        if let Ok(mut audio_state) = self.audio_state.try_lock() {
+            self.cached_audio_levels = audio_state.analyze_and_get_levels();
+            self.cached_beat_state = audio_state.get_simple_beat_state();
+        }
+        // If locked, use existing cached values - guarantees zero blocking
 
         FrameState {
             midi,
-            audio_levels,
+            audio_levels: self.cached_audio_levels,
             osc,
-            beat: beat_state,
+            beat: self.cached_beat_state,
         }
     }
 
@@ -1791,7 +1791,7 @@ pub struct App {
     last_fps_log: Instant,
     frame_count: u64,
     frame_count_since_log: u32,
-    cached_window_size: (u32, u32), // Cache window size to avoid system calls
+    cached_window_size: (u32, u32),
 }
 
 impl App {
@@ -1906,12 +1906,11 @@ impl App {
         }
     }
 
-    fn get_push_constants(&self, elapsed: f32, w: u32, h: u32) -> PushConstants {
+    fn get_push_constants(&mut self, elapsed: f32, w: u32, h: u32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
 
         let note_velocity = if frame_state.midi.note_count > 0 {
             frame_state.midi.notes[frame_state.midi.last_note as usize]
-            //frame
         } else {
             0.0
         };

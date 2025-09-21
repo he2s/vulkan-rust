@@ -1,6 +1,6 @@
 #version 450
 
-// === INPUTS ===
+// Push constants from application
 layout(push_constant) uniform PushConstants {
     float time;
     uint  mouse_x;
@@ -8,8 +8,8 @@ layout(push_constant) uniform PushConstants {
     uint  mouse_pressed;
     float note_velocity;
     float pitch_bend;
-    float cc1;    // Controls rectangle speed
-    float cc74;   // Controls inversion frequency
+    float cc1;    // mid frequencies / mod wheel
+    float cc74;   // high frequencies / cutoff
     uint  note_count;
     uint  last_note;
     float osc_ch1;
@@ -24,259 +24,229 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// === CONSTANTS ===
+// Constants
 #define PI 3.141592653589793238
 #define TAU (2.0 * PI)
+#define EPSILON 0.01
+#define MAX_STEPS 128
+#define MAX_DIST 120.0
 
-// === HELPER FUNCTIONS ===
+// Helper macros
+#define min2(a, b) ((a.x < b.x) ? a : b)
+#define pos(x) (x * 0.5 + 0.5)
+#define sat(x) clamp(x, 0.0, 1.0)
 
-// Sharp rectangle SDF
-float sdBox(vec2 p, vec2 size) {
-    vec2 d = abs(p) - size;
-    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+// Rotation matrix
+mat2 rot(float a) {
+    float c = cos(a);
+    float s = sin(a);
+    return mat2(c, -s, s, c);
 }
 
-// Smooth step with adjustable sharpness
-float sharpStep(float edge0, float edge1, float x, float sharpness) {
-    float t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
-    return pow(t, sharpness);
+// Audio-reactive color palette
+vec3 palette(float x) {
+    // Shift palette based on note count
+    x += float(pc.note_count % 8u) * 0.125;
+
+    // Audio-reactive palette parameters
+    vec3 a = vec3(0.5, 0.5, 0.0); // Base color (fire)
+    vec3 b = vec3(0.5 + pc.cc74 * 0.3); // Amplitude
+    vec3 c = vec3(0.1, 0.5, 0.0) + vec3(pc.osc_ch1, pc.osc_ch2, 0.0) * 0.3;
+    vec3 d = vec3(0.0, pc.pitch_bend * 0.3, pc.note_velocity * 0.2);
+
+    return a + b * cos(TAU * (c * x + d));
 }
 
-// Random function for controlled chaos
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+// Smooth union with audio-reactive smoothness
+float smooth_union(float a, float b, float k) {
+    float h = sat(pos((b - a) / k));
+    return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// === RECTANGLE PATTERNS ===
+// Torus SDF
+float sdf_torus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
 
-// Moving rectangle strip (horizontal or vertical)
-float movingStrip(vec2 uv, float pos, float width, float speed, bool horizontal) {
-    float coord = horizontal ? uv.y : uv.x;
-    float movingPos = pos + pc.time * speed;
+// Global glow accumulator
+vec3 glow;
 
-    // Wrap position
-    movingPos = fract(movingPos);
+// Main SDF scene
+vec2 sdf(vec3 p) {
+    vec2 di = vec2(120.0, -1.0);
 
-    // Create strip
-    float strip = step(movingPos - width * 0.5, coord) * (1.0 - step(movingPos + width * 0.5, coord));
+    // Audio-reactive parameters
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
 
-    // Handle wrapping at edges
-    if(movingPos - width * 0.5 < 0.0) {
-        strip += step(1.0 + (movingPos - width * 0.5), coord);
+    // Audio-reactive smoothness
+    float smoothness = 0.2 + modulation * 0.4;
+
+    // Time with audio modulation
+    float t = pc.time * (0.5 + energy * 1.0);
+
+    // Pre-calculate common rotation matrices
+    mat2 rot1 = rot(t + pc.pitch_bend);
+    mat2 rot2 = rot(t * 1.2);
+    mat2 rot3 = rot(t * PI / 2.0 + PI / 3.0);
+
+    // Audio-reactive torus size
+    float ringRadius = 1.0 + vertexEnergy * 0.2;
+    float ringThickness = 0.15 + energy * 0.05;
+    vec2 torusParams = vec2(ringRadius, ringThickness);
+
+    // Apply common transformations once
+    vec3 pBase = p;
+    pBase.yz *= rot1;
+    pBase.xy *= rot2;
+    pBase.xz *= rot3;
+
+    // First ring
+    float ring_1 = sdf_torus(pBase, torusParams);
+
+    // Second ring with additional rotation
+    vec3 p2 = pBase;
+    p2.yz *= rot(t * PI / 2.0 + PI / 5.0 + pc.osc_ch1 * PI);
+    float ring_2 = sdf_torus(p2, torusParams * (1.0 + modulation * 0.2));
+
+    // Third ring with additional rotation
+    vec3 p3 = pBase;
+    p3.xy *= rot(t * PI / 2.0 - PI / 7.0 + pc.osc_ch2 * PI);
+    float ring_3 = sdf_torus(p3, torusParams * (1.0 - modulation * 0.1));
+
+    // Combine rings with audio-reactive smoothness
+    float combined = smooth_union(ring_1, smooth_union(ring_2, ring_3, smoothness), smoothness);
+
+    di = min2(di, vec2(combined, 1.0));
+
+    return di;
+}
+
+// Ray marching - optimized
+vec2 trace(vec3 ro, vec3 rd) {
+    vec3 p = ro;
+    vec2 di;
+    float td = 0.0;
+
+    // Audio-reactive glow intensity - calculated once
+    float glowStrength = 0.05 + pc.note_velocity * 0.03;
+
+    // Pre-calculate glow tint multiplier
+    vec3 glowTint = vec3(1.0 + pc.cc74 * 0.5, 1.0, 1.0 + pc.cc1 * 0.5);
+
+    // Optimize glow calculation constants
+    const float glowDivisor = 1.0 / 0.4;
+
+    glow = vec3(0.0);
+
+    for(int i = 0; i < MAX_STEPS; i++) {
+        if(td >= MAX_DIST) break;
+
+        di = sdf(p);
+
+        if(di.x < EPSILON) {
+            return vec2(td, di.y);
+        }
+
+        // Optimized distance accumulation
+        td += di.x;
+        p = ro + rd * td;
+
+        // Optimized glow calculation
+        float glowFactor = (1.0 - sat(di.x * glowDivisor)) * glowStrength;
+        vec3 glowColor = pos(normalize(p)) * glowFactor;
+        glow += glowColor * glowTint;
     }
-    if(movingPos + width * 0.5 > 1.0) {
-        strip += 1.0 - step((movingPos + width * 0.5) - 1.0, coord);
+
+    return vec2(-1.0, -1.0);
+}
+
+// Normal calculation - optimized to reduce SDF calls
+vec3 get_normal(vec3 p) {
+    const float eps = EPSILON;
+    const vec3 ex = vec3(eps, 0.0, 0.0);
+    const vec3 ey = vec3(0.0, eps, 0.0);
+    const vec3 ez = vec3(0.0, 0.0, eps);
+
+    return normalize(vec3(
+        sdf(p + ex).x - sdf(p - ex).x,
+        sdf(p + ey).x - sdf(p - ey).x,
+        sdf(p + ez).x - sdf(p - ez).x
+    ));
+}
+
+// Main rendering function
+vec3 render(vec2 uv) {
+    // Camera setup with audio influence
+    float camDist = 3.0 - pc.cc1 * 0.5;
+    vec3 ro = vec3(0.0, 0.0, -camDist);
+
+    // Mouse/OSC camera rotation
+    if(pc.mouse_pressed > 0u) {
+        float mx = (float(pc.mouse_x) / float(pc.render_w) - 0.5) * TAU;
+        float my = (float(pc.mouse_y) / float(pc.render_h) - 0.5) * PI;
+        ro.xz *= rot(mx);
+        ro.yz *= rot(my);
     }
 
-    return strip;
+    vec3 rd = normalize(vec3(uv, 1.0));
+    vec3 lo = ro; // Light origin
+
+    vec2 tdi = trace(ro, rd);
+
+    if(tdi.x > 0.0) {
+        vec3 p = ro + rd * tdi.x;
+        vec3 n = get_normal(p);
+
+        // Iridescence effect with audio modulation
+        vec3 cd = normalize(ro - p);
+        vec3 ld = normalize(lo - p);
+        vec3 reflection = reflect(rd, n);
+
+        // Audio-reactive perturbation
+        float perturbStrength = 10.0 + pc.note_velocity * 15.0;
+        vec3 perturbation = 0.05 * sin(p * perturbStrength);
+
+        // Calculate iridescence
+        float iridValue = dot(n + perturbation, cd) * 2.0;
+        vec3 iridescence = palette(iridValue);
+
+        // Specular with audio influence
+        float specular = sat(dot(reflection, ld));
+        float specIntensity = 0.1 + pc.cc74 * 0.2;
+        specular *= specIntensity * pow(pos(sin(specular * 20.0 - 3.0)) + 0.1, 32.0);
+specular += specIntensity * pow(sat(dot(reflection, ld)) + 0.3, 8.0);
+
+// Shadow/ambient
+float shadow = pow(sat(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 3.0);
+
+// Combine lighting
+vec3 color = iridescence * shadow + specular + glow;
+
+// Add energy flash
+if(pc.note_velocity > 0.7) {
+    color += vec3(0.2, 0.3, 0.5) * (pc.note_velocity - 0.7);
 }
 
-// Static grid of rectangles
-float rectangleGrid(vec2 uv, float gridSize, float rectSize) {
-    vec2 grid = fract(uv * gridSize);
-    vec2 gridId = floor(uv * gridSize);
-
-    // Center in each grid cell
-    vec2 centerDist = abs(grid - 0.5);
-
-    // Create rectangle
-    float rect = step(centerDist.x, rectSize) * step(centerDist.y, rectSize);
-
-    return rect;
+return color;
 }
 
-// Checkerboard pattern
-float checkerboard(vec2 uv, float size) {
-    vec2 grid = floor(uv * size);
-    return mod(grid.x + grid.y, 2.0);
+// Background with glow only
+return vec3(0.0) + glow;
 }
 
-// === MAIN RENDERING ===
 void main() {
     vec2 resolution = vec2(float(pc.render_w), float(pc.render_h));
-    vec2 uv = fragUV;
-    vec2 centeredUV = (fragUV - 0.5) * 2.0;
-    centeredUV.x *= resolution.x / resolution.y;
+    vec2 uv = (fragUV - 0.5) * 2.0;
+    uv.x *= resolution.x / resolution.y;
 
-    // === BASE PATTERNS ===
-
-    // Speed control from MIDI
-    float baseSpeed = 0.2 + pc.cc1 * 0.5;
-
-    // Layer 1: Horizontal moving strips
-    float h1 = movingStrip(uv, 0.1, 0.08, baseSpeed * 0.5, true);
-    float h2 = movingStrip(uv, 0.3, 0.12, -baseSpeed * 0.7, true);
-    float h3 = movingStrip(uv, 0.5, 0.06, baseSpeed * 0.9, true);
-    float h4 = movingStrip(uv, 0.7, 0.15, -baseSpeed * 0.4, true);
-    float h5 = movingStrip(uv, 0.9, 0.1, baseSpeed * 0.6, true);
-
-    // Layer 2: Vertical moving strips
-    float v1 = movingStrip(uv, 0.15, 0.1, -baseSpeed * 0.6, false);
-    float v2 = movingStrip(uv, 0.35, 0.08, baseSpeed * 0.8, false);
-    float v3 = movingStrip(uv, 0.55, 0.14, -baseSpeed * 0.5, false);
-    float v4 = movingStrip(uv, 0.75, 0.07, baseSpeed * 0.7, false);
-    float v5 = movingStrip(uv, 0.95, 0.11, -baseSpeed * 0.9, false);
-
-    // Layer 3: Static grid with animated size
-    float gridPulse = 1.0 + sin(pc.time * 2.0) * 0.2 * pc.osc_ch1;
-    float grid = rectangleGrid(uv, 8.0 * gridPulse, 0.3);
-
-    // Layer 4: Rotating checkerboard
-    vec2 rotUV = centeredUV;
-    float rotSpeed = pc.time * 0.1 * (1.0 + pc.pitch_bend);
-    float c = cos(rotSpeed);
-    float s = sin(rotSpeed);
-    rotUV = mat2(c, -s, s, c) * rotUV;
-    float checker = checkerboard(rotUV * 2.0 + 0.5, 4.0);
-
-    // === COMBINE LAYERS WITH XOR LOGIC ===
-    float pattern = 0.0;
-
-    // Horizontal strips
-    pattern = mod(pattern + h1 + h2 + h3 + h4 + h5, 2.0);
-
-    // Vertical strips create intersections
-    pattern = mod(pattern + v1 + v2 + v3 + v4 + v5, 2.0);
-
-    // Grid overlay with XOR
-    pattern = mod(pattern + grid * 0.5, 2.0);
-
-    // Subtle checkerboard
-    pattern = mod(pattern + checker * 0.3 * pc.osc_ch2, 2.0);
-
-    // === INVERSION EFFECTS ===
-
-    // Periodic inversion based on CC74
-    float inversionFreq = 1.0 + pc.cc74 * 5.0;
-    float invert = step(0.5, sin(pc.time * inversionFreq));
-    pattern = mix(pattern, 1.0 - pattern, invert);
-
-    // Audio-triggered inversion
-    if(pc.note_velocity > 0.8) {
-        float audioInvert = step(0.5, sin(pc.time * 20.0 * pc.note_velocity));
-        pattern = mix(pattern, 1.0 - pattern, audioInvert);
-    }
-
-    // Spatial inversion (creates interesting patterns)
-    float spatialInvert = step(0.5, sin(centeredUV.x * 10.0) * sin(centeredUV.y * 10.0));
-    pattern = mix(pattern, 1.0 - pattern, spatialInvert * 0.2);
-
-    // === EDGE DETECTION FOR SHARP RECTANGLES ===
-    float sharpness = 20.0;
-    pattern = pow(pattern, sharpness);
-
-    // === RARE COLOR BURSTS ===
-    vec3 color = vec3(pattern); // Start with black and white
-
-    // Trigger conditions for color
-    float colorTrigger = 0.0;
-
-    // Random rare color burst (happens rarely)
-    float randomBurst = hash(vec2(floor(pc.time * 0.5), 0.0));
-    if(randomBurst > 0.95) {
-        colorTrigger = 1.0;
-    }
-
-    // Audio-triggered color burst
-    if(pc.note_velocity > 0.9) {
-        colorTrigger = 1.0;
-    }
-
-    // Note count milestone burst
-    if(mod(float(pc.note_count), 50.0) < 1.0 && pc.note_count > 0u) {
-        colorTrigger = 1.0;
-    }
-
-    // Apply color burst
-    if(colorTrigger > 0.0) {
-        // Create a color gradient based on position and time
-        vec3 burstColor;
-        float colorTime = pc.time * 2.0;
-
-        // Different color schemes for different triggers
-        if(pc.note_velocity > 0.9) {
-            // Audio burst: Vibrant rainbow
-            burstColor = vec3(
-            sin(colorTime + centeredUV.x * PI) * 0.5 + 0.5,
-            sin(colorTime + PI * 0.666 + centeredUV.y * PI) * 0.5 + 0.5,
-            sin(colorTime + PI * 1.333 + length(centeredUV) * PI) * 0.5 + 0.5
-            );
-        } else {
-            // Random burst: Subtle pastels
-            burstColor = vec3(
-            0.7 + sin(colorTime) * 0.3,
-            0.7 + sin(colorTime + 2.0) * 0.3,
-            0.7 + sin(colorTime + 4.0) * 0.3
-            );
-        }
-
-        // Fade out the color burst
-        float burstFade = 1.0 - fract(pc.time * 0.5);
-        color = mix(vec3(pattern), burstColor * pattern, burstFade * colorTrigger);
-    }
-
-    // === RARE BLUR EFFECTS ===
-    float blurAmount = 0.0;
-
-    // Blur trigger conditions
-    if(hash(vec2(floor(pc.time * 0.3), 1.0)) > 0.97) {
-        blurAmount = 0.5; // Random rare blur
-    }
-
-    if(pc.cc1 > 0.9) {
-        blurAmount = (pc.cc1 - 0.9) * 5.0; // Manual blur control
-    }
-
-    // Apply blur by mixing with neighboring samples (simple box blur approximation)
-    if(blurAmount > 0.0) {
-        vec3 blurred = color;
-        float blurSize = 0.01 * blurAmount;
-
-        // Sample surrounding pixels (simplified for performance)
-        for(float x = -1.0; x <= 1.0; x += 1.0) {
-            for(float y = -1.0; y <= 1.0; y += 1.0) {
-                vec2 offset = vec2(x, y) * blurSize;
-                vec2 sampleUV = uv + offset;
-
-                // Recalculate pattern for blur sample (simplified)
-                float blurPattern = checkerboard(sampleUV, 8.0);
-                blurred += vec3(blurPattern) * 0.111; // 1/9 for box blur
-            }
-        }
-
-        color = mix(color, blurred, blurAmount);
-    }
-
-    // === SHARP TRANSITIONS WITH OCCASIONAL SOFTNESS ===
-
-    // Add scan lines for that CRT feel
-    float scanline = sin(uv.y * resolution.y * PI) * 0.04;
-    color *= 1.0 + scanline;
+    vec3 c = render(uv);
 
     // Subtle vignette
-    float vignette = 1.0 - length(centeredUV) * 0.15;
-    color *= vignette;
+    float vignette = 1.0 - length(uv) * 0.3;
+    c *= vignette;
 
-    // === HIGH CONTRAST OUTPUT ===
-
-    // Increase contrast except during color bursts
-    if(colorTrigger < 0.5) {
-        color = pow(color, vec3(1.2));
-
-        // Pure black and white mode (most of the time)
-        float threshold = 0.5;
-        color = vec3(step(threshold, dot(color, vec3(0.333))));
-    }
-
-    // === GLITCH EFFECTS (RARE) ===
-    if(pc.note_velocity > 0.95) {
-        // Horizontal displacement glitch
-        float glitchLine = step(0.99, hash(vec2(0.0, floor(uv.y * 100.0) + floor(pc.time * 30.0))));
-        if(glitchLine > 0.0) {
-            color = vec3(1.0) - color; // Invert glitched lines
-        }
-    }
-
-    // Ensure output is in valid range
-    outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    // Output with saturation
+    outColor = vec4(sat(c), 1.0);
 }
