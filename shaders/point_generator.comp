@@ -1,0 +1,187 @@
+#version 450
+
+// Local workgroup size - 64 threads per workgroup
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Push constants for audio/timing data
+layout(push_constant) uniform PushConstants {
+    float time;
+    uint mouse_x;
+    uint mouse_y;
+    uint mouse_pressed;
+    float note_velocity;
+    float pitch_bend;
+    float cc1;
+    float cc74;
+    uint note_count;
+    uint last_note;
+    float osc_ch1;
+    float osc_ch2;
+    uint render_w;
+    uint render_h;
+    float bpm;
+    float time_to_next_beat;
+    uint max_points;          // Maximum number of points to generate
+    uint fft_size;            // Size of FFT data
+    float audio_intensity;    // Overall audio intensity
+    float bass_level;         // Bass frequency level
+    float mid_level;          // Mid frequency level
+    float high_level;         // High frequency level
+} pc;
+
+// Output buffer for generated points
+struct PointData {
+    vec2 position;      // World position
+    float size;         // Point size/scale
+    float intensity;    // Visual intensity
+    vec4 color;         // RGBA color
+    float rotation;     // Rotation angle
+    uint type;          // Point type (0=triangle, 1=quad, 2=star, etc.)
+    vec2 velocity;      // Movement velocity
+};
+
+layout(set = 0, binding = 0, std430) restrict writeonly buffer PointBuffer {
+    PointData points[];
+};
+
+// Simple noise functions for procedural generation
+float hash(float n) {
+    return fract(sin(n) * 43758.5453123);
+}
+
+float noise(vec2 p) {
+    vec2 ip = floor(p);
+    vec2 u = fract(p);
+    u = u * u * (3.0 - 2.0 * u);
+
+    float res = mix(
+        mix(hash(ip.x + ip.y * 57.0), hash(ip.x + 1.0 + ip.y * 57.0), u.x),
+        mix(hash(ip.x + (ip.y + 1.0) * 57.0), hash(ip.x + 1.0 + (ip.y + 1.0) * 57.0), u.x),
+        u.y);
+    return res * res;
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+
+    // Don't generate more points than we have space for
+    if (index >= pc.max_points) {
+        return;
+    }
+
+    // Seed based on index and time for consistent but animated results
+    float seed = float(index) * 0.1 + pc.time * 0.1;
+    vec2 base_pos = vec2(hash(seed), hash(seed + 1.0)) * 2.0 - 1.0;
+
+    // Create different generation patterns based on audio
+    float audio_reactive = pc.osc_ch1 + pc.note_velocity + pc.bass_level;
+
+    // Pattern selection based on audio intensity
+    uint pattern = uint(audio_reactive * 4.0) % 4;
+
+    vec2 position;
+    float size;
+    float intensity;
+    vec4 color;
+    float rotation;
+    uint point_type;
+    vec2 velocity = vec2(0.0);
+
+    if (pattern == 0) {
+        // Grid pattern with audio distortion
+        float grid_size = 16.0 + pc.bass_level * 8.0;
+        float row = floor(float(index) / grid_size);
+        float col = mod(float(index), grid_size);
+
+        position = vec2(
+            (col / grid_size) * 2.0 - 1.0,
+            (row / grid_size) * 2.0 - 1.0
+        );
+
+        // Add wave distortion based on audio
+        vec2 wave = vec2(
+            sin(pc.time * 2.0 + position.x * 5.0) * pc.mid_level * 0.3,
+            cos(pc.time * 1.5 + position.y * 4.0) * pc.high_level * 0.2
+        );
+        position += wave;
+
+        size = 0.02 + pc.note_velocity * 0.05;
+        intensity = 0.7 + pc.osc_ch1 * 0.3;
+        color = vec4(0.3 + pc.bass_level, 0.5 + pc.mid_level, 0.8 + pc.high_level, 0.8);
+        rotation = pc.time + float(index) * 0.1;
+        point_type = 0; // Triangle
+
+    } else if (pattern == 1) {
+        // Circular/spiral pattern
+        float angle = float(index) * 0.1 + pc.time * 0.5;
+        float radius = 0.1 + float(index % 100) / 100.0 * 0.7;
+        radius *= 1.0 + pc.bass_level * 0.5;
+
+        position = vec2(cos(angle), sin(angle)) * radius;
+
+        size = 0.015 + pc.note_velocity * 0.04;
+        intensity = 0.6 + pc.osc_ch2 * 0.4;
+        color = vec4(0.8 + pc.high_level, 0.3 + pc.bass_level, 0.6 + pc.mid_level, 0.9);
+        rotation = angle;
+        point_type = 1; // Quad
+
+        // Add orbital velocity
+        velocity = vec2(-sin(angle), cos(angle)) * pc.bpm * 0.001;
+
+    } else if (pattern == 2) {
+        // Beat-synchronized burst pattern
+        float beat_phase = 1.0 - pc.time_to_next_beat;
+        float burst_radius = beat_phase * 0.8;
+
+        float angle = hash(seed + 2.0) * 6.28318;
+        position = vec2(cos(angle), sin(angle)) * burst_radius;
+
+        size = 0.03 + beat_phase * 0.1;
+        intensity = beat_phase;
+        color = vec4(1.0, 0.5 + beat_phase * 0.5, 0.2, beat_phase);
+        rotation = pc.time * 2.0 + angle;
+        point_type = 2; // Star
+
+        // Explosive velocity
+        velocity = position * pc.bpm * 0.002;
+
+    } else {
+        // Random/particle pattern
+        position = base_pos;
+
+        // Add noise-based movement
+        vec2 noise_offset = vec2(
+            noise(base_pos * 3.0 + pc.time * 0.5),
+            noise(base_pos * 3.0 + pc.time * 0.5 + 10.0)
+        ) * 0.4;
+        position += noise_offset;
+
+        size = 0.01 + hash(seed + 3.0) * 0.03 + pc.audio_intensity * 0.02;
+        intensity = 0.5 + hash(seed + 4.0) * 0.5;
+        color = vec4(
+            0.5 + hash(seed + 5.0) * 0.5,
+            0.3 + hash(seed + 6.0) * 0.7,
+            0.8 + hash(seed + 7.0) * 0.2,
+            0.7
+        );
+        rotation = hash(seed + 8.0) * 6.28318;
+        point_type = uint(hash(seed + 9.0) * 3.0) % 3;
+
+        velocity = vec2(
+            (hash(seed + 10.0) - 0.5) * 0.01,
+            (hash(seed + 11.0) - 0.5) * 0.01
+        );
+    }
+
+    // Clamp position to screen bounds
+    position = clamp(position, vec2(-1.0), vec2(1.0));
+
+    // Write to output buffer
+    points[index].position = position;
+    points[index].size = size;
+    points[index].intensity = intensity;
+    points[index].color = color;
+    points[index].rotation = rotation;
+    points[index].type = point_type;
+    points[index].velocity = velocity;
+}

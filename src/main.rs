@@ -278,8 +278,10 @@ impl ShaderSources {
             let (vfile, ffile) = match preset {
                 ShaderPreset::Torus => ("fullscreen.vert", "gradient.frag"),
                 ShaderPreset::Terrain => ("terrain.vert", "terrain.frag"),
-                ShaderPreset::Crystal => ("crystal.vert", "crystal.frag"),
+                ShaderPreset::Crystal => ("points.vert", "simple_geometry.frag"),
+                ShaderPreset::WeirdCrystal => ("points.vert", "weird_crystal.frag"),
                 ShaderPreset::Stars => ("stars.vert", "stars.frag"),
+                ShaderPreset::ComputeParticles => ("instanced_triangles.vert", "instanced_triangles.frag"),
                 ShaderPreset::Custom => return Err(anyhow!("Custom shader requires paths")),
             };
             let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
@@ -306,13 +308,23 @@ impl ShaderSources {
             }),
             ShaderPreset::Crystal => Ok(Self {
                 vertex: include_str!("../shaders/points.vert").to_string(),
+                geometry: Some(include_str!("../shaders/simple.geom").to_string()),
+                fragment: include_str!("../shaders/simple_geometry.frag").to_string(),
+            }),
+            ShaderPreset::WeirdCrystal => Ok(Self {
+                vertex: include_str!("../shaders/points.vert").to_string(),
                 geometry: Some(include_str!("../shaders/example.geom").to_string()),
-                fragment: include_str!("../shaders/crystal.frag").to_string(),
+                fragment: include_str!("../shaders/weird_crystal.frag").to_string(),
             }),
             ShaderPreset::Stars => Ok(Self {
                 vertex: include_str!("../shaders/stars.vert").to_string(),
                 geometry: None,
                 fragment: include_str!("../shaders/stars.frag").to_string(),
+            }),
+            ShaderPreset::ComputeParticles => Ok(Self {
+                vertex: include_str!("../shaders/instanced_triangles.vert").to_string(),
+                geometry: None,
+                fragment: include_str!("../shaders/instanced_triangles.frag").to_string(),
             }),
             ShaderPreset::Custom => Err(anyhow!("Custom shader requires paths")),
         }
@@ -399,6 +411,25 @@ struct PushConstants {
     time_to_next_beat: f32,
     time_since_last_beat: f32,
     beats_per_bar: u32,
+    max_points: u32,
+    fft_size: u32,
+    audio_intensity: f32,
+    bass_level: f32,
+    mid_level: f32,
+    high_level: f32,
+}
+
+// Point data structure matching the compute shader
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PointData {
+    position: [f32; 2],
+    size: f32,
+    intensity: f32,
+    color: [f32; 4],
+    rotation: f32,
+    point_type: u32,
+    velocity: [f32; 2],
 }
 
 // vulkan graphics
@@ -429,6 +460,9 @@ pub struct VulkanBuffers {
     index_memory: vk::DeviceMemory,
     instance_buffer: vk::Buffer,
     instance_memory: vk::DeviceMemory,
+    // Storage buffer for compute-generated points
+    point_storage_buffer: vk::Buffer,
+    point_storage_memory: vk::DeviceMemory,
 }
 
 pub struct VulkanPipeline {
@@ -437,6 +471,13 @@ pub struct VulkanPipeline {
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
     has_geometry_shader: bool,
+    // Compute pipeline for point generation
+    compute_pipeline_layout: vk::PipelineLayout,
+    compute_pipeline: vk::Pipeline,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set: vk::DescriptorSet,
+    use_compute_generation: bool,
 }
 
 pub struct VulkanCommands {
@@ -472,7 +513,7 @@ impl Gfx {
         let context = VulkanContext::new(window)?;
         let swapchain = VulkanSwapchain::new(&context, window, vsync)?;
         let buffers = VulkanBuffers::new(&context)?;
-        let pipeline = VulkanPipeline::new(&context, &swapchain, shader_config)?;
+        let pipeline = VulkanPipeline::new(&context, &swapchain, shader_config, &buffers)?;
         let commands = VulkanCommands::new(&context)?;
         let sync = VulkanSync::new(&context)?;
 
@@ -611,10 +652,16 @@ impl Gfx {
             .device
             .cmd_set_scissor(cmd_buffer, 0, &[render_area]);
 
+        let push_constant_stages = if self.pipeline.has_geometry_shader {
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::GEOMETRY | vk::ShaderStageFlags::FRAGMENT
+        } else {
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT
+        };
+
         self.context.device.cmd_push_constants(
             cmd_buffer,
             self.pipeline.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            push_constant_stages,
             0,
             std::slice::from_raw_parts(
                 push_constants as *const PushConstants as *const u8,
@@ -622,8 +669,91 @@ impl Gfx {
             ),
         );
 
-        // Choose drawing method based on geometry shader presence
-        if self.pipeline.has_geometry_shader {
+        // Choose drawing method based on pipeline type
+        if self.pipeline.use_compute_generation {
+            // Dispatch compute shader first to generate particles
+            self.context.device.cmd_bind_pipeline(
+                cmd_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline.compute_pipeline,
+            );
+
+            // Bind descriptor set for compute shader
+            self.context.device.cmd_bind_descriptor_sets(
+                cmd_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline.compute_pipeline_layout,
+                0,
+                &[self.pipeline.descriptor_set],
+                &[],
+            );
+
+            // Push constants for compute shader
+            self.context.device.cmd_push_constants(
+                cmd_buffer,
+                self.pipeline.compute_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                std::slice::from_raw_parts(
+                    push_constants as *const PushConstants as *const u8,
+                    std::mem::size_of::<PushConstants>(),
+                ),
+            );
+
+            // Dispatch compute shader (50,000 points, 64 threads per workgroup)
+            self.context.device.cmd_dispatch(cmd_buffer, (50000 + 63) / 64, 1, 1);
+
+            // Memory barrier to ensure compute writes complete before vertex reading
+            let barrier = vk::MemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
+                ..Default::default()
+            };
+
+            self.context.device.cmd_pipeline_barrier(
+                cmd_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::VERTEX_INPUT,
+                vk::DependencyFlags::empty(),
+                &[barrier],
+                &[],
+                &[],
+            );
+
+            // Switch back to graphics pipeline for rendering
+            self.context.device.cmd_bind_pipeline(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.pipeline,
+            );
+
+            // Bind descriptor set for vertex shader
+            self.context.device.cmd_bind_descriptor_sets(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.pipeline_layout,
+                0,
+                &[self.pipeline.descriptor_set],
+                &[],
+            );
+
+            // Bind vertex buffer (triangle vertices)
+            let vertex_buffers = [self.buffers.vertex_buffer];
+            let offsets = [0];
+            self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+
+            // Bind index buffer
+            self.context.device.cmd_bind_index_buffer(
+                cmd_buffer,
+                self.buffers.index_buffer,
+                0,
+                vk::IndexType::UINT16
+            );
+
+            // Draw instanced triangles: 3 indices per triangle, 50,000 instances
+            self.context.device.cmd_draw_indexed(cmd_buffer, 3, 50000, 0, 0, 0);
+
+        } else if self.pipeline.has_geometry_shader {
             // For geometry shader: draw points that will be expanded into triangles
             // No need for index buffer or instance buffer
             self.context.device.cmd_draw(cmd_buffer, 400, 1, 0, 0); // 20x20 grid of points
@@ -955,16 +1085,15 @@ impl VulkanSwapchain {
 
 impl VulkanBuffers {
     unsafe fn new(context: &VulkanContext) -> Result<Self> {
-        // Rectangle vertices (4 vertices instead of 6, using indices)
+        // Triangle vertices for instanced rendering
         let vertices = [
-            Vertex { pos: [-0.5, -0.5], uv: [0.0, 0.0] },
-            Vertex { pos: [ 0.5, -0.5], uv: [1.0, 0.0] },
-            Vertex { pos: [ 0.5,  0.5], uv: [1.0, 1.0] },
-            Vertex { pos: [-0.5,  0.5], uv: [0.0, 1.0] },
+            Vertex { pos: [0.0, 0.5], uv: [0.5, 0.0] },     // Top
+            Vertex { pos: [-0.43, -0.25], uv: [0.0, 1.0] }, // Bottom left
+            Vertex { pos: [0.43, -0.25], uv: [1.0, 1.0] },  // Bottom right
         ];
 
-        // Rectangle indices (2 triangles)
-        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
+        // Triangle indices (single triangle)
+        let indices: [u16; 3] = [0, 1, 2];
 
         // Create vertex buffer with simple host-visible memory for now
         let (vertex_buffer, vertex_memory) = Self::create_buffer(
@@ -1017,6 +1146,26 @@ impl VulkanBuffers {
             vk::BufferUsageFlags::VERTEX_BUFFER,
         )?;
 
+        // Create storage buffer for compute-generated points (50,000 points)
+        const MAX_POINTS: usize = 50000;
+        let point_data = vec![PointData {
+            position: [0.0, 0.0],
+            size: 0.01,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            rotation: 0.0,
+            point_type: 0,
+            velocity: [0.0, 0.0],
+        }; MAX_POINTS];
+
+        let (point_storage_buffer, point_storage_memory) = Self::create_buffer(
+            &context.device,
+            context.physical_device,
+            &context.instance,
+            &point_data,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+
         Ok(Self {
             vertex_buffer,
             vertex_memory,
@@ -1024,6 +1173,8 @@ impl VulkanBuffers {
             index_memory,
             instance_buffer,
             instance_memory,
+            point_storage_buffer,
+            point_storage_memory,
         })
     }
 
@@ -1203,6 +1354,8 @@ impl VulkanBuffers {
         device.free_memory(self.index_memory, None);
         device.destroy_buffer(self.instance_buffer, None);
         device.free_memory(self.instance_memory, None);
+        device.destroy_buffer(self.point_storage_buffer, None);
+        device.free_memory(self.point_storage_memory, None);
     }
 }
 
@@ -1211,9 +1364,29 @@ impl VulkanPipeline {
         context: &VulkanContext,
         swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
+        buffers: &VulkanBuffers,
     ) -> Result<Self> {
         let render_pass = Self::create_render_pass(&context.device, swapchain.format)?;
-        let pipeline_layout = Self::create_pipeline_layout(&context.device)?;
+
+        // Check if we should use compute generation
+        let use_compute_generation = shader_config.preset == ShaderPreset::ComputeParticles;
+
+        // Create compute pipeline and descriptor sets first if needed
+        let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
+            if use_compute_generation {
+                Self::create_compute_pipeline(&context.device, buffers)?
+            } else {
+                (vk::PipelineLayout::null(), vk::Pipeline::null(), vk::DescriptorSetLayout::null(),
+                 vk::DescriptorPool::null(), vk::DescriptorSet::null())
+            };
+
+        // Create graphics pipeline layout with optional descriptor set layout
+        let pipeline_layout = if use_compute_generation {
+            Self::create_graphics_pipeline_layout(&context.device, Some(descriptor_set_layout))?
+        } else {
+            Self::create_graphics_pipeline_layout(&context.device, None)?
+        };
+
         let (pipeline, has_geometry_shader) = Self::create_graphics_pipeline(
             &context.device,
             render_pass,
@@ -1229,6 +1402,12 @@ impl VulkanPipeline {
             pipeline,
             framebuffers,
             has_geometry_shader,
+            compute_pipeline_layout,
+            compute_pipeline,
+            descriptor_set_layout,
+            descriptor_pool,
+            descriptor_set,
+            use_compute_generation,
         })
     }
 
@@ -1272,17 +1451,30 @@ impl VulkanPipeline {
         Ok(device.create_render_pass(&create_info, None)?)
     }
 
-    unsafe fn create_pipeline_layout(device: &ash::Device) -> Result<vk::PipelineLayout> {
+    unsafe fn create_graphics_pipeline_layout(
+        device: &ash::Device,
+        descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    ) -> Result<vk::PipelineLayout> {
         let push_constant_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::GEOMETRY | vk::ShaderStageFlags::FRAGMENT,
             offset: 0,
             size: std::mem::size_of::<PushConstants>() as u32,
         };
 
-        let create_info = vk::PipelineLayoutCreateInfo {
-            push_constant_range_count: 1,
-            p_push_constant_ranges: &push_constant_range,
-            ..Default::default()
+        let create_info = if let Some(layout) = descriptor_set_layout {
+            vk::PipelineLayoutCreateInfo {
+                set_layout_count: 1,
+                p_set_layouts: &layout,
+                push_constant_range_count: 1,
+                p_push_constant_ranges: &push_constant_range,
+                ..Default::default()
+            }
+        } else {
+            vk::PipelineLayoutCreateInfo {
+                push_constant_range_count: 1,
+                p_push_constant_ranges: &push_constant_range,
+                ..Default::default()
+            }
         };
 
         Ok(device.create_pipeline_layout(&create_info, None)?)
@@ -1530,6 +1722,118 @@ impl VulkanPipeline {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    unsafe fn create_compute_pipeline(
+        device: &ash::Device,
+        buffers: &VulkanBuffers,
+    ) -> Result<(vk::PipelineLayout, vk::Pipeline, vk::DescriptorSetLayout, vk::DescriptorPool, vk::DescriptorSet)> {
+        // Create descriptor set layout for storage buffer
+        let binding = vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            ..Default::default()
+        };
+
+        let layout_info = vk::DescriptorSetLayoutCreateInfo {
+            binding_count: 1,
+            p_bindings: &binding,
+            ..Default::default()
+        };
+
+        let descriptor_set_layout = device.create_descriptor_set_layout(&layout_info, None)?;
+
+        // Create pipeline layout with push constants and descriptor set
+        let push_constant_range = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            offset: 0,
+            size: std::mem::size_of::<PushConstants>() as u32,
+        };
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            set_layout_count: 1,
+            p_set_layouts: &descriptor_set_layout,
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_constant_range,
+            ..Default::default()
+        };
+
+        let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+
+        // Compile compute shader
+        let compute_source = include_str!("../shaders/point_generator.comp");
+        let compute_code = Self::compile_shader(compute_source, shaderc::ShaderKind::Compute)?;
+        let compute_module = Self::create_shader_module(device, &compute_code)?;
+
+        // Create compute pipeline
+        let entry_name = CString::new("main")?;
+        let pipeline_info = vk::ComputePipelineCreateInfo {
+            stage: vk::PipelineShaderStageCreateInfo {
+                stage: vk::ShaderStageFlags::COMPUTE,
+                module: compute_module,
+                p_name: entry_name.as_ptr(),
+                ..Default::default()
+            },
+            layout: pipeline_layout,
+            ..Default::default()
+        };
+
+        let pipeline = device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            .map_err(|e| e.1)?[0];
+
+        // Create descriptor pool
+        let pool_size = vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+        };
+
+        let pool_info = vk::DescriptorPoolCreateInfo {
+            flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
+            max_sets: 1,
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+            ..Default::default()
+        };
+
+        let descriptor_pool = device.create_descriptor_pool(&pool_info, None)?;
+
+        // Allocate descriptor set
+        let alloc_info = vk::DescriptorSetAllocateInfo {
+            descriptor_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &descriptor_set_layout,
+            ..Default::default()
+        };
+
+        let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
+        let descriptor_set = descriptor_sets[0];
+
+        // Update descriptor set with storage buffer
+        let buffer_info = vk::DescriptorBufferInfo {
+            buffer: buffers.point_storage_buffer,
+            offset: 0,
+            range: vk::WHOLE_SIZE,
+        };
+
+        let write_descriptor_set = vk::WriteDescriptorSet {
+            dst_set: descriptor_set,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            p_buffer_info: &buffer_info,
+            ..Default::default()
+        };
+
+        device.update_descriptor_sets(&[write_descriptor_set], &[]);
+
+        // Cleanup shader module
+        device.destroy_shader_module(compute_module, None);
+
+        Ok((pipeline_layout, pipeline, descriptor_set_layout, descriptor_pool, descriptor_set))
     }
 
     unsafe fn create_pipeline(
@@ -1991,14 +2295,20 @@ impl App {
             cc74: blended_cc74,
             note_count: frame_state.midi.note_count,
             last_note: frame_state.midi.last_note as u32,
-            osc_ch1: frame_state.osc.channel1, // Add this
-            osc_ch2: frame_state.osc.channel2, // Add this
+            osc_ch1: frame_state.osc.channel1,
+            osc_ch2: frame_state.osc.channel2,
             render_w: w,
             render_h: h,
             bpm: frame_state.beat.bpm,
             time_to_next_beat: frame_state.beat.time_to_next_beat,
             time_since_last_beat: frame_state.beat.time_since_last_beat,
             beats_per_bar: frame_state.beat.beats_per_bar,
+            max_points: 50000,
+            fft_size: 1024, // Could be configurable
+            audio_intensity: frame_state.audio_levels.level_rms,
+            bass_level: frame_state.audio_levels.low,
+            mid_level: frame_state.audio_levels.mid,
+            high_level: frame_state.audio_levels.high,
         }
     }
 

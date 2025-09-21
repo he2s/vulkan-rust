@@ -120,8 +120,10 @@ pub enum ShaderPreset {
     Torus,
     Terrain,
     Crystal,
+    WeirdCrystal,
     Custom,
     Stars,
+    ComputeParticles,
 }
 
 const DEFAULT_WIDTH: u32 = 800;

@@ -16,6 +16,8 @@ layout(push_constant) uniform PushConstants {
     float osc_ch2;
     uint render_w;
     uint render_h;
+    float bpm;
+    float time_to_next_beat;
 } pc;
 
 layout(location = 0) out vec2 frag_uv;
@@ -32,9 +34,10 @@ void main() {
     float x = (col / float(points_per_row - 1)) * 2.0 - 1.0;
     float y = (row / float(points_per_row - 1)) * 2.0 - 1.0;
 
-    // Add some animation based on time and audio
+    // Add some animation based on time, audio, and beat timing
     float wave = sin(pc.time * 2.0 + x * 3.0 + y * 3.0) * 0.1;
-    float audio_influence = pc.osc_ch1 * 0.2 + pc.note_velocity * 0.1;
+    float beat_influence = (1.0 - pc.time_to_next_beat) * 0.15; // Beat-synchronized movement
+    float audio_influence = pc.osc_ch1 * 0.2 + pc.note_velocity * 0.1 + beat_influence;
 
     vec2 pos = vec2(x, y) + vec2(wave * audio_influence);
 
