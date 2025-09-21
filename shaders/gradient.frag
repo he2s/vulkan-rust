@@ -18,9 +18,9 @@ layout(push_constant) uniform PushConstants {
     uint  render_h;
 } pc;
 
-layout(location = 0) in vec2 fragUV;
-layout(location = 1) in float vertexEnergy;
-layout(location = 2) in vec3 worldPos;
+layout(location = 0) in vec2 frag_uv;
+layout(location = 1) in flat uint frag_instance_id;
+layout(location = 2) in vec2 frag_screen_pos;
 
 layout(location = 0) out vec4 outColor;
 
@@ -81,7 +81,7 @@ void main() {
     ? vec2(pc.render_w, pc.render_h)
     : vec2(800.0, 600.0);
 
-    vec2 fragCoord = fragUV * iResolution;
+    vec2 fragCoord = frag_uv * iResolution;
 
     // Square uv centered and scaled to the screen height
     vec2 uv = (-iResolution.xy + 2. * fragCoord.xy) / iResolution.y;
@@ -209,8 +209,20 @@ void main() {
     // Contrast boost for high frequencies
     color = mix(color, color * color, brightness * 0.3);
 
-    // Add vertex energy contribution
-    color *= (1.0 + 0.1 * clamp(vertexEnergy, 0.0, 1.0));
+    // Add per-instance color variation using optimized approach
+    float instance_factor = float(frag_instance_id % 16u) / 16.0; // Back to modulo for correctness
+
+    // Pre-computed phase offsets for better performance
+    const float phase1 = 2.09439;
+    const float phase2 = 4.18879;
+    float base_angle = instance_factor * 6.28318;
+
+    vec3 instance_color = vec3(
+        0.5 + 0.5 * sin(base_angle),
+        0.5 + 0.5 * sin(base_angle + phase1),
+        0.5 + 0.5 * sin(base_angle + phase2)
+    );
+    color *= mix(vec3(1.0), instance_color, 0.3);
 
     outColor = vec4(color, 1.0);
 }

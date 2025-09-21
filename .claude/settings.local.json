@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo check:*)",
       "Bash(cargo run:*)",
-      "Bash(timeout 5s cargo run --release)"
+      "Bash(timeout 5s cargo run --release)",
+      "Bash(timeout 3s cargo run --release)",
+      "Bash(timeout 2s cargo run --release)"
     ],
     "deny": [],
     "ask": []

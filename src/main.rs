@@ -713,6 +713,25 @@ impl AudioState {
     }
 }
 
+// vertex data structures
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Vertex {
+    pos: [f32; 2],
+    uv: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InstanceData {
+    offset: [f32; 2],
+    scale: [f32; 2],
+    rotation_cos: f32,    // Pre-computed cos
+    rotation_sin: f32,    // Pre-computed sin
+    color_index: u32,     // Back to u32 for alignment
+    _padding: u32,        // Alignment padding
+}
+
 // push constants
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -734,7 +753,8 @@ struct PushConstants {
     bpm: f32,
     time_to_next_beat: f32,
     time_since_last_beat: f32,
-    beats_per_bar: u32,}
+    beats_per_bar: u32,
+}
 
 // vulkan graphics
 pub struct VulkanContext {
@@ -755,6 +775,15 @@ pub struct VulkanSwapchain {
     format: vk::Format,
     images: Vec<vk::Image>,
     views: Vec<vk::ImageView>,
+}
+
+pub struct VulkanBuffers {
+    vertex_buffer: vk::Buffer,
+    vertex_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_memory: vk::DeviceMemory,
+    instance_buffer: vk::Buffer,
+    instance_memory: vk::DeviceMemory,
 }
 
 pub struct VulkanPipeline {
@@ -785,6 +814,7 @@ pub struct Gfx {
     context: VulkanContext,
     swapchain: VulkanSwapchain,
     pipeline: VulkanPipeline,
+    buffers: VulkanBuffers,
     commands: VulkanCommands,
     sync: VulkanSync,
     state: VulkanState,
@@ -795,6 +825,7 @@ impl Gfx {
     pub unsafe fn new(window: &Window, shader_config: &ShaderConfig, vsync: bool) -> Result<Self> {
         let context = VulkanContext::new(window)?;
         let swapchain = VulkanSwapchain::new(&context, window, vsync)?;
+        let buffers = VulkanBuffers::new(&context)?;
         let pipeline = VulkanPipeline::new(&context, &swapchain, shader_config)?;
         let commands = VulkanCommands::new(&context)?;
         let sync = VulkanSync::new(&context)?;
@@ -803,6 +834,7 @@ impl Gfx {
             context,
             swapchain,
             pipeline,
+            buffers,
             commands,
             sync,
             state: VulkanState::default(),
@@ -944,7 +976,24 @@ impl Gfx {
             ),
         );
 
-        self.context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
+        // Bind vertex and instance buffers
+        let vertex_buffers = [self.buffers.vertex_buffer];
+        let instance_buffers = [self.buffers.instance_buffer];
+        let offsets = [0];
+
+        self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &vertex_buffers, &offsets);
+        self.context.device.cmd_bind_vertex_buffers(cmd_buffer, 1, &instance_buffers, &offsets);
+
+        // Bind index buffer
+        self.context.device.cmd_bind_index_buffer(
+            cmd_buffer,
+            self.buffers.index_buffer,
+            0,
+            vk::IndexType::UINT16
+        );
+
+        // Draw indexed: 6 indices per rectangle, 10,000 instances (40,000 vertices instead of 60,000)
+        self.context.device.cmd_draw_indexed(cmd_buffer, 6, 10000, 0, 0, 0);
         self.context.device.cmd_end_render_pass(cmd_buffer);
         self.context.device.end_command_buffer(cmd_buffer)?;
 
@@ -1250,6 +1299,259 @@ impl VulkanSwapchain {
     }
 }
 
+impl VulkanBuffers {
+    unsafe fn new(context: &VulkanContext) -> Result<Self> {
+        // Rectangle vertices (4 vertices instead of 6, using indices)
+        let vertices = [
+            Vertex { pos: [-0.5, -0.5], uv: [0.0, 0.0] },
+            Vertex { pos: [ 0.5, -0.5], uv: [1.0, 0.0] },
+            Vertex { pos: [ 0.5,  0.5], uv: [1.0, 1.0] },
+            Vertex { pos: [-0.5,  0.5], uv: [0.0, 1.0] },
+        ];
+
+        // Rectangle indices (2 triangles)
+        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
+
+        // Create vertex buffer with simple host-visible memory for now
+        let (vertex_buffer, vertex_memory) = Self::create_buffer(
+            &context.device,
+            context.physical_device,
+            &context.instance,
+            &vertices,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+
+        // Create index buffer
+        let (index_buffer, index_memory) = Self::create_buffer(
+            &context.device,
+            context.physical_device,
+            &context.instance,
+            &indices,
+            vk::BufferUsageFlags::INDEX_BUFFER,
+        )?;
+
+        // Generate 10,000 rectangle instances with pre-computed rotations
+        let mut instances = Vec::with_capacity(10000);
+        let grid_size = 100; // 100x100 grid
+        let spacing = 0.02;
+
+        for y in 0..grid_size {
+            for x in 0..grid_size {
+                let offset_x = (x as f32 - grid_size as f32 * 0.5) * spacing;
+                let offset_y = (y as f32 - grid_size as f32 * 0.5) * spacing;
+
+                // Pre-compute base rotation (will be animated with time in shader)
+                let base_rotation = (x + y) as f32 * 0.1;
+
+                instances.push(InstanceData {
+                    offset: [offset_x, offset_y],
+                    scale: [0.008, 0.008], // Small rectangles
+                    rotation_cos: base_rotation.cos(),
+                    rotation_sin: base_rotation.sin(),
+                    color_index: (x + y) % 16,
+                    _padding: 0,
+                });
+            }
+        }
+
+        // Create instance buffer with simple host-visible memory for now
+        let (instance_buffer, instance_memory) = Self::create_buffer(
+            &context.device,
+            context.physical_device,
+            &context.instance,
+            &instances,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+
+        Ok(Self {
+            vertex_buffer,
+            vertex_memory,
+            index_buffer,
+            index_memory,
+            instance_buffer,
+            instance_memory,
+        })
+    }
+
+    unsafe fn create_gpu_buffer<T>(
+        device: &ash::Device,
+        physical_device: vk::PhysicalDevice,
+        instance: &ash::Instance,
+        data: &[T],
+        usage: vk::BufferUsageFlags,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+        let buffer_size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+
+        // Create staging buffer (CPU-accessible)
+        let staging_buffer_info = vk::BufferCreateInfo {
+            size: buffer_size,
+            usage: vk::BufferUsageFlags::TRANSFER_SRC,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let staging_buffer = device.create_buffer(&staging_buffer_info, None)?;
+        let staging_mem_requirements = device.get_buffer_memory_requirements(staging_buffer);
+
+        let mem_properties = instance.get_physical_device_memory_properties(physical_device);
+        let staging_memory_type = Self::find_memory_type(
+            staging_mem_requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &mem_properties,
+        )?;
+
+        let staging_alloc_info = vk::MemoryAllocateInfo {
+            allocation_size: staging_mem_requirements.size,
+            memory_type_index: staging_memory_type,
+            ..Default::default()
+        };
+
+        let staging_memory = device.allocate_memory(&staging_alloc_info, None)?;
+        device.bind_buffer_memory(staging_buffer, staging_memory, 0)?;
+
+        // Copy data to staging buffer
+        let data_ptr = device.map_memory(
+            staging_memory,
+            0,
+            buffer_size,
+            vk::MemoryMapFlags::empty(),
+        )?;
+
+        std::ptr::copy_nonoverlapping(
+            data.as_ptr() as *const u8,
+            data_ptr as *mut u8,
+            buffer_size as usize,
+        );
+
+        device.unmap_memory(staging_memory);
+
+        // Create GPU-local buffer
+        let buffer_info = vk::BufferCreateInfo {
+            size: buffer_size,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let buffer = device.create_buffer(&buffer_info, None)?;
+        let mem_requirements = device.get_buffer_memory_requirements(buffer);
+
+        let memory_type = Self::find_memory_type(
+            mem_requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &mem_properties,
+        )?;
+
+        let alloc_info = vk::MemoryAllocateInfo {
+            allocation_size: mem_requirements.size,
+            memory_type_index: memory_type,
+            ..Default::default()
+        };
+
+        let buffer_memory = device.allocate_memory(&alloc_info, None)?;
+        device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+
+        // Copy from staging to GPU buffer
+        Self::copy_buffer(device, staging_buffer, buffer, buffer_size)?;
+
+        // Cleanup staging resources
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_memory, None);
+
+        Ok((buffer, buffer_memory))
+    }
+
+    unsafe fn copy_buffer(
+        device: &ash::Device,
+        src_buffer: vk::Buffer,
+        dst_buffer: vk::Buffer,
+        size: vk::DeviceSize,
+    ) -> Result<()> {
+        // Note: In a real application, you'd want to use a dedicated transfer queue
+        // For simplicity, we're using a simple synchronous copy
+        // This would need the command pool and queue from VulkanContext
+        Ok(())
+    }
+
+    unsafe fn create_buffer<T>(
+        device: &ash::Device,
+        physical_device: vk::PhysicalDevice,
+        instance: &ash::Instance,
+        data: &[T],
+        usage: vk::BufferUsageFlags,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+        let buffer_size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+
+        let buffer_info = vk::BufferCreateInfo {
+            size: buffer_size,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let buffer = device.create_buffer(&buffer_info, None)?;
+        let mem_requirements = device.get_buffer_memory_requirements(buffer);
+
+        let mem_properties = instance.get_physical_device_memory_properties(physical_device);
+        let memory_type = Self::find_memory_type(
+            mem_requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &mem_properties,
+        )?;
+
+        let alloc_info = vk::MemoryAllocateInfo {
+            allocation_size: mem_requirements.size,
+            memory_type_index: memory_type,
+            ..Default::default()
+        };
+
+        let buffer_memory = device.allocate_memory(&alloc_info, None)?;
+        device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+
+        // Copy data to buffer
+        let data_ptr = device.map_memory(
+            buffer_memory,
+            0,
+            buffer_size,
+            vk::MemoryMapFlags::empty(),
+        )?;
+
+        std::ptr::copy_nonoverlapping(
+            data.as_ptr() as *const u8,
+            data_ptr as *mut u8,
+            buffer_size as usize,
+        );
+
+        device.unmap_memory(buffer_memory);
+
+        Ok((buffer, buffer_memory))
+    }
+
+    fn find_memory_type(
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+        mem_properties: &vk::PhysicalDeviceMemoryProperties,
+    ) -> Result<u32> {
+        for i in 0..mem_properties.memory_type_count {
+            if (type_filter & (1 << i)) != 0
+                && mem_properties.memory_types[i as usize].property_flags.contains(properties)
+            {
+                return Ok(i);
+            }
+        }
+        Err(anyhow!("Failed to find suitable memory type"))
+    }
+
+    unsafe fn cleanup(&mut self, device: &ash::Device) {
+        device.destroy_buffer(self.vertex_buffer, None);
+        device.free_memory(self.vertex_memory, None);
+        device.destroy_buffer(self.index_buffer, None);
+        device.free_memory(self.index_memory, None);
+        device.destroy_buffer(self.instance_buffer, None);
+        device.free_memory(self.instance_memory, None);
+    }
+}
+
 impl VulkanPipeline {
     unsafe fn new(
         context: &VulkanContext,
@@ -1365,7 +1667,80 @@ impl VulkanPipeline {
             },
         ];
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let vertex_binding_descriptions = [
+            // Vertex data binding
+            vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: std::mem::size_of::<Vertex>() as u32,
+                input_rate: vk::VertexInputRate::VERTEX,
+            },
+            // Instance data binding
+            vk::VertexInputBindingDescription {
+                binding: 1,
+                stride: std::mem::size_of::<InstanceData>() as u32,
+                input_rate: vk::VertexInputRate::INSTANCE,
+            },
+        ];
+
+        let vertex_attribute_descriptions = [
+            // Vertex position
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: 0,
+            },
+            // Vertex UV
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: 8,
+            },
+            // Instance offset
+            vk::VertexInputAttributeDescription {
+                location: 2,
+                binding: 1,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: 0,
+            },
+            // Instance scale
+            vk::VertexInputAttributeDescription {
+                location: 3,
+                binding: 1,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: 8,
+            },
+            // Instance rotation cos
+            vk::VertexInputAttributeDescription {
+                location: 4,
+                binding: 1,
+                format: vk::Format::R32_SFLOAT,
+                offset: 16,
+            },
+            // Instance rotation sin
+            vk::VertexInputAttributeDescription {
+                location: 5,
+                binding: 1,
+                format: vk::Format::R32_SFLOAT,
+                offset: 20,
+            },
+            // Instance color index
+            vk::VertexInputAttributeDescription {
+                location: 6,
+                binding: 1,
+                format: vk::Format::R32_UINT,
+                offset: 24,
+            },
+        ];
+
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
+            vertex_binding_description_count: vertex_binding_descriptions.len() as u32,
+            p_vertex_binding_descriptions: vertex_binding_descriptions.as_ptr(),
+            vertex_attribute_description_count: vertex_attribute_descriptions.len() as u32,
+            p_vertex_attribute_descriptions: vertex_attribute_descriptions.as_ptr(),
+            ..Default::default()
+        };
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
             topology: vk::PrimitiveTopology::TRIANGLE_LIST,
             ..Default::default()
@@ -1594,6 +1969,7 @@ impl Drop for Gfx {
                 .device
                 .destroy_render_pass(self.pipeline.render_pass, None);
 
+            self.buffers.cleanup(&self.context.device);
             self.swapchain.cleanup(&self.context.device);
 
             self.context
