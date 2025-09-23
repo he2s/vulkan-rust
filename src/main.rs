@@ -528,6 +528,7 @@ pub struct VulkanPipeline {
     #[allow(dead_code)]
     descriptor_pool: vk::DescriptorPool,
     descriptor_set: vk::DescriptorSet,
+    #[allow(dead_code)]
     use_compute_generation: bool,
 }
 
