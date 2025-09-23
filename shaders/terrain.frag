@@ -1,6 +1,6 @@
 #version 450
 
-// Push constants from application
+// Push constants matching your application
 layout(push_constant) uniform PushConstants {
     float time;
     uint  mouse_x;
@@ -24,223 +24,319 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// Constants
-#define PI 3.141592653589793238
-#define TAU (2.0 * PI)
-#define EPSILON 0.01
-#define MAX_STEPS 128
-#define MAX_DIST 120.0
+// Quality settings - define QUALITY_LEVEL before including this shader
+// 0 = Low (fastest), 1 = Medium, 2 = High (original quality)
+#ifndef QUALITY_LEVEL
+#define QUALITY_LEVEL 2
+#endif
 
-// Helper macros
-#define min2(a, b) ((a.x < b.x) ? a : b)
-#define pos(x) (x * 0.5 + 0.5)
-#define sat(x) clamp(x, 0.0, 1.0)
+// Quality-dependent constants
+#if QUALITY_LEVEL == 0
+const int MAX_RAYMARCH_STEPS = 50;
+const int FRACTAL_ITERATIONS = 4;
+#elif QUALITY_LEVEL == 1
+const int MAX_RAYMARCH_STEPS = 80;
+const int FRACTAL_ITERATIONS = 5;
+#else
+const int MAX_RAYMARCH_STEPS = 130;
+const int FRACTAL_ITERATIONS = 6;
+#endif
 
-// Rotation matrix
-mat2 rot(float a) {
-    float c = cos(a);
-    float s = sin(a);
-    return mat2(c, -s, s, c);
+// Global variables for shader state
+float prm1 = 0.;
+vec2 bsMo = vec2(0);
+float iTime;
+vec2 iResolution;
+vec2 iMouse;
+
+// Optimized utility functions with inline hints
+mat2 rot(in float a) {
+    float c = cos(a), s = sin(a);
+    return mat2(c, s, -s, c);
 }
 
-// Audio-reactive color palette
-vec3 palette(float x) {
-    // Shift palette based on note count
-    x += float(pc.note_count % 8u) * 0.125;
+// Pre-computed matrix constant
+const mat3 m3 = mat3(0.33338, 0.56034, -0.71817,
+-0.87887, 0.32651, -0.15323,
+0.15162, 0.69596, 0.61339) * 1.93;
 
-    // Audio-reactive palette parameters
-    vec3 a = vec3(0.5, 0.5, 0.0); // Base color (fire)
-    vec3 b = vec3(0.5 + pc.cc74 * 0.3); // Amplitude
-    vec3 c = vec3(0.1, 0.5, 0.0) + vec3(pc.osc_ch1, pc.osc_ch2, 0.0) * 0.3;
-    vec3 d = vec3(0.0, pc.pitch_bend * 0.3, pc.note_velocity * 0.2);
+// Inline dot product for 2D vectors
+float mag2(vec2 p) { return dot(p, p); }
 
-    return a + b * cos(TAU * (c * x + d));
+// Optimized linear step
+float linstep(in float mn, in float mx, in float x) {
+    return clamp((x - mn)/(mx - mn), 0., 1.);
 }
 
-// Smooth union with audio-reactive smoothness
-float smooth_union(float a, float b, float k) {
-    float h = sat(pos((b - a) / k));
-    return mix(b, a, h) - k * h * (1.0 - h);
+// Optimized displacement with pre-computed constants
+const float DISP_FREQ1 = 0.22;
+const float DISP_FREQ2 = 0.175;
+
+vec2 disp(float t) {
+    // Pre-compute audio parameters once
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+
+    float ampScale = 1.0 + energy * 0.5 + modulation * 0.3;
+    // Optimized: single sin/cos calculation
+    return vec2(sin(t * DISP_FREQ1), cos(t * DISP_FREQ2)) * 2.0 * ampScale;
 }
 
-// Torus SDF
-float sdf_torus(vec3 p, vec2 t) {
-    vec2 q = vec2(length(p.xz) - t.x, p.y);
-    return length(q) - t.y;
+vec2 map(vec3 p) {
+    // Cache all audio parameters at once
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
+    float bend = clamp(pc.pitch_bend, -1.0, 1.0);
+
+    vec3 p2 = p;
+    p2.xy -= disp(p.z).xy;
+
+    // Optimized rotation calculation
+    float rotAmount = sin(p.z + iTime) * (0.1 + prm1 * 0.05) + iTime * 0.09 + bend * 0.3;
+    p.xy *= rot(rotAmount);
+
+    float cl = mag2(p2.xy);
+    float d = 0.;
+
+    // Single scaling operation
+    p *= 0.61;
+
+    float z = 1.;
+    float trk = 1.;
+
+    // Pre-compute displacement amplitude
+    float dspAmp = 0.1 + prm1 * 0.2 + energy * 0.15;
+
+    // Determine iteration count based on quality and brightness
+    #if QUALITY_LEVEL == 0
+    int iterations = 4;
+    #else
+    int iterations = min(FRACTAL_ITERATIONS, 4 + int(brightness * 2.0));
+    #endif
+
+    // Optimized fractal loop with pre-computed values
+    for(int i = 0; i < FRACTAL_ITERATIONS; i++) {
+        if(i >= iterations) break;
+
+        // Combine calculations to reduce operations
+        float vertInfluence = 1.0 + vertexEnergy * 0.1;
+        vec3 sinOffset = sin(p.zxy * (0.75 * trk) + (iTime * trk * 0.8));
+        p += sinOffset * dspAmp * vertInfluence;
+
+        // Single trigonometric calculation
+        d -= abs(dot(cos(p), sin(p.yzx)) * z);
+
+        // Update iteration variables
+        z *= 0.57;
+        trk *= 1.4;
+        p = p * m3;
+    }
+
+    // Optimized density calculation
+    d = abs(d + prm1 * 3.) + prm1 * 0.3 - 2.5 + bsMo.y;
+    d *= (1.0 - energy * 0.2);
+
+    return vec2(d + cl * 0.2 + 0.25, cl);
 }
 
-// Global glow accumulator
-vec3 glow;
+vec4 render(in vec3 ro, in vec3 rd, float time) {
+    vec4 rez = vec4(0);
 
-// Main SDF scene
-vec2 sdf(vec3 p) {
-    vec2 di = vec2(120.0, -1.0);
-
-    // Audio-reactive parameters
+    // Cache audio parameters once
     float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
     float brightness = clamp(pc.cc74, 0.0, 1.0);
 
-    // Audio-reactive smoothness
-    float smoothness = 0.2 + modulation * 0.4;
+    const float ldst = 8.;
+    vec3 lpos = vec3(disp(time + ldst) * 0.5, time + ldst);
+    float t = 1.5;
+    float fogT = 0.;
 
-    // Time with audio modulation
-    float t = pc.time * (0.5 + energy * 1.0);
+    // Adjust max steps based on quality
+    #if QUALITY_LEVEL == 0
+    int maxSteps = 50;
+    #else
+    int maxSteps = min(MAX_RAYMARCH_STEPS, 80 + int(brightness * 50.0));
+    #endif
 
-    // Audio-reactive torus size
-    float ringRadius = 1.0 + vertexEnergy * 0.2;
-    float ringThickness = 0.15 + energy * 0.05;
-    vec2 torusParams = vec2(ringRadius, ringThickness);
+    for(int i = 0; i < MAX_RAYMARCH_STEPS; i++) {
+        if(i >= maxSteps) break;
+        if(rez.a > 0.99) break;
 
-    // First ring with audio rotation
-    vec3 p1 = p;
-    p1.yz *= rot(t + pc.pitch_bend);
-    p1.xy *= rot(t * 1.2);
-    p1.xz *= rot(t * PI / 2.0 + PI / 3.0);
-    float ring_1 = sdf_torus(p1, torusParams);
+        vec3 pos = ro + t * rd;
+        vec2 mpv = map(pos);
+        float den = clamp(mpv.x - 0.3, 0., 1.) * 1.12;
+        float dn = clamp((mpv.x + 2.), 0., 3.);
 
-    // Second ring
-    vec3 p2 = p;
-    p2.yz *= rot(t + pc.pitch_bend);
-    p2.xy *= rot(t * 1.2);
-    p2.xz *= rot(t * PI / 2.0 + PI / 3.0);
-    p2.yz *= rot(t * PI / 2.0 + PI / 5.0 + pc.osc_ch1 * PI);
-    float ring_2 = sdf_torus(p2, torusParams * (1.0 + modulation * 0.2));
+        vec4 col = vec4(0);
+        if (mpv.x > 0.6) {
+            // Pre-compute base color
+            vec3 baseColor = vec3(5., 0.4, 0.2);
 
-    // Third ring
-    vec3 p3 = p;
-    p3.yz *= rot(t + pc.pitch_bend);
-    p3.xy *= rot(t * 1.2);
-    p3.xz *= rot(t * PI / 2.0 + PI / 3.0);
-    p3.xy *= rot(t * PI / 2.0 - PI / 7.0 + pc.osc_ch2 * PI);
-    float ring_3 = sdf_torus(p3, torusParams * (1.0 - modulation * 0.1));
+            // Optimized note influence calculation
+            if(pc.note_count > 0u) {
+                float noteInfluence = float(pc.note_count) * 0.125; // Multiplication instead of division
+                baseColor = mix(baseColor, vec3(3., 0.8, 5.), clamp(noteInfluence, 0., 0.5));
+            }
 
-    // Combine rings with audio-reactive smoothness
-    float combined = smooth_union(ring_1, smooth_union(ring_2, ring_3, smoothness), smoothness);
+            // Add OSC color influence
+            baseColor.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
 
-    di = min2(di, vec2(combined, 1.0));
+            // Optimized color calculation - pre-compute common terms
+            float posZ = sin(pos.z * 0.4) * 0.5 + 1.8;
+            col = vec4(sin(baseColor + mpv.y * 0.1 + posZ) * 0.5 + 0.5, 0.08);
 
-    return di;
-}
+            // Combine density multiplications
+            float denCubed = den * den * den;
+            col *= denCubed;
+            col.rgb *= linstep(4., -2.5, mpv.x) * 2.3;
 
-// Ray marching
-vec2 trace(vec3 ro, vec3 rd) {
-    vec3 p = ro;
-    vec2 di;
-    float td = 0.0;
+            // Optimized lighting calculation
+            #if QUALITY_LEVEL > 0
+            // Full lighting for medium/high quality
+            float dif = clamp((den - map(pos + .8).x) / 9., 0.001, 1.);
+            dif += clamp((den - map(pos + .35).x) / 2.5, 0.001, 1.);
+            #else
+            // Single sample for low quality
+            float dif = clamp((den - map(pos + 0.5).x) / 6., 0.001, 1.);
+            #endif
 
-    // Audio-reactive glow intensity
-    float glowStrength = 0.05 + pc.note_velocity * 0.03;
+            // Pre-compute and combine light colors
+            vec3 lightColor = vec3(0.005, .045, .075) + 1.5 * vec3(0.033, 0.07, 0.03) * dif;
+            lightColor *= (1.0 + brightness * 0.5);
+            col.xyz *= den * lightColor;
 
-    glow = vec3(0.0);
-
-    for(int i = 0; i < MAX_STEPS; i++) {
-        if(td >= MAX_DIST) break;
-
-        di = sdf(p);
-
-        if(di.x < EPSILON) {
-            return vec2(td, di.y);
+            // Energy glow
+            col.xyz += col.xyz * energy * 0.75;
         }
 
-        p += di.x * rd;
+        // Optimized fog calculation
+        float fogC = exp(t * 0.2 - 2.2);
+        vec4 fogColor = vec4(0.06, 0.11, 0.11, 0.1);
+        fogColor.rgb = mix(fogColor.rgb, vec3(0.08, 0.05, 0.12), modulation);
+        col.rgba += fogColor * clamp(fogC - fogT, 0., 1.);
+        fogT = fogC;
 
-        // Accumulate glow with audio modulation
-        float glowFactor = (1.0 - sat(di.x / 0.4)) * glowStrength;
-        vec3 glowColor = pos(normalize(p)) * glowFactor;
+        // Accumulation
+        rez = rez + col * (1. - rez.a);
 
-        // Tint glow based on audio
-        glowColor *= vec3(1.0 + pc.cc74 * 0.5, 1.0, 1.0 + pc.cc1 * 0.5);
-
-        glow += glowColor;
-        td = distance(ro, p);
+        // Dynamic step size with pre-computed factor
+        t += clamp(0.5 - dn * dn * 0.05, 0.09, 0.3);
     }
 
-    return vec2(-1.0, -1.0);
+    return clamp(rez, 0.0, 1.0);
 }
 
-// Normal calculation
-vec3 get_normal(vec3 p) {
-    vec2 e = EPSILON * vec2(1.0, -1.0);
-    return normalize(
-    e.xyy * sdf(p + e.xyy).x +
-    e.yxy * sdf(p + e.yxy).x +
-    e.yyx * sdf(p + e.yyx).x +
-    e.xxx * sdf(p + e.xxx).x
-    );
+// Optimized saturation calculation
+float getsat(vec3 c) {
+    float mi = min(min(c.x, c.y), c.z);
+    float ma = max(max(c.x, c.y), c.z);
+    return (ma - mi) / (ma + 1e-7);
 }
 
-// Main rendering function
-vec3 render(vec2 uv) {
-    // Camera setup with audio influence
-    float camDist = 3.0 - pc.cc1 * 0.5;
-    vec3 ro = vec3(0.0, 0.0, -camDist);
+// Optimized color interpolation
+vec3 iLerp(in vec3 a, in vec3 b, in float x) {
+    vec3 ic = mix(a, b, x) + vec3(1e-6, 0., 0.);
+    float sd = abs(getsat(ic) - mix(getsat(a), getsat(b), x));
 
-    // Mouse/OSC camera rotation
-    if(pc.mouse_pressed > 0u) {
-        float mx = (float(pc.mouse_x) / float(pc.render_w) - 0.5) * TAU;
-        float my = (float(pc.mouse_y) / float(pc.render_h) - 0.5) * PI;
-        ro.xz *= rot(mx);
-        ro.yz *= rot(my);
-    }
+    // Pre-compute common terms
+    float icX2 = 2. * ic.x;
+    float icY2 = 2. * ic.y;
+    float icZ2 = 2. * ic.z;
 
-    vec3 rd = normalize(vec3(uv, 1.0));
-    vec3 lo = ro; // Light origin
+    vec3 dir = normalize(vec3(icX2 - ic.y - ic.z,
+    icY2 - ic.x - ic.z,
+    icZ2 - ic.y - ic.x));
 
-    vec2 tdi = trace(ro, rd);
+    float lgt = dot(vec3(1.0), ic);
+    float ff = dot(dir, normalize(ic));
+    ic += 1.5 * dir * sd * ff * lgt;
 
-    if(tdi.x > 0.0) {
-        vec3 p = ro + rd * tdi.x;
-        vec3 n = get_normal(p);
-
-        // Iridescence effect with audio modulation
-        vec3 cd = normalize(ro - p);
-        vec3 ld = normalize(lo - p);
-        vec3 reflection = reflect(rd, n);
-
-        // Audio-reactive perturbation
-        float perturbStrength = 10.0 + pc.note_velocity * 15.0;
-        vec3 perturbation = 0.05 * sin(p * perturbStrength);
-
-        // Calculate iridescence
-        float iridValue = dot(n + perturbation, cd) * 2.0;
-        vec3 iridescence = palette(iridValue);
-
-        // Specular with audio influence
-        float specular = sat(dot(reflection, ld));
-        float specIntensity = 0.1 + pc.cc74 * 0.2;
-        specular *= specIntensity * pow(pos(sin(specular * 20.0 - 3.0)) + 0.1, 32.0);
-specular += specIntensity * pow(sat(dot(reflection, ld)) + 0.3, 8.0);
-
-// Shadow/ambient
-float shadow = pow(sat(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 3.0);
-
-// Combine lighting
-vec3 color = iridescence * shadow + specular + glow;
-
-// Add energy flash
-if(pc.note_velocity > 0.7) {
-    color += vec3(0.2, 0.3, 0.5) * (pc.note_velocity - 0.7);
-}
-
-return color;
-}
-
-// Background with glow only
-return vec3(0.0) + glow;
+    return clamp(ic, 0., 1.);
 }
 
 void main() {
-    vec2 resolution = vec2(float(pc.render_w), float(pc.render_h));
-    vec2 uv = (fragUV - 0.5) * 2.0;
-    uv.x *= resolution.x / resolution.y;
+    // Setup resolution and time - optimized branching
+    iResolution = (pc.render_w > 0u && pc.render_h > 0u)
+    ? vec2(pc.render_w, pc.render_h)
+    : vec2(800.0, 600.0);
 
-    vec3 c = render(uv);
+    // Time with audio modulation
+    float modulation = clamp(pc.cc1, 0.0, 1.0);
+    float timeScale = mix(0.8, 1.5, modulation);
+    iTime = pc.time * timeScale;
 
-    // Subtle vignette
-    float vignette = 1.0 - length(uv) * 0.3;
-    c *= vignette;
+    // Mouse setup
+    iMouse = vec2(float(pc.mouse_x), float(pc.mouse_y));
 
-    // Output with saturation
-    outColor = vec4(sat(c), 1.0);
+    vec2 q = fragUV;
+    vec2 p = (fragUV * iResolution - 0.5 * iResolution.xy) / iResolution.y;
+
+    // Interactive control - optimized conditional
+    if (pc.mouse_pressed > 0u) {
+        bsMo = (iMouse - 0.5 * iResolution.xy) / iResolution.y;
+    } else {
+        bsMo = vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
+    }
+
+    float time = iTime * 3.;
+    vec3 ro = vec3(0, 0, time);
+
+    // Audio-reactive camera movement
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
+    ro += vec3(sin(iTime) * 0.5 * (1.0 + energy),
+    sin(iTime * 1.) * 0. + vertexEnergy * 0.2,
+    0);
+
+    float dspAmp = .85 + energy * 0.15;
+    ro.xy += disp(ro.z) * dspAmp;
+    float tgtDst = 3.5;
+
+    vec3 target = normalize(ro - vec3(disp(time + tgtDst) * dspAmp, time + tgtDst));
+    ro.x -= bsMo.x * 2.;
+
+    // Optimized camera matrix construction
+    vec3 rightdir = normalize(cross(target, vec3(0, 1, 0)));
+    vec3 updir = normalize(cross(rightdir, target));
+    rightdir = normalize(cross(updir, target));
+    vec3 rd = normalize((p.x * rightdir + p.y * updir) * 1. - target);
+
+    // Add pitch bend to camera rotation
+    float bend = clamp(pc.pitch_bend, -1.0, 1.0);
+    rd.xy *= rot(-disp(time + 3.5).x * 0.2 + bsMo.x + bend * 0.5);
+
+    // Modulation parameter
+    prm1 = smoothstep(-0.4, 0.4, sin(iTime * 0.3));
+    prm1 = mix(prm1, 1.0, energy * 0.3);
+
+    // Render the scene
+    vec4 scn = render(ro, rd, time);
+    vec3 col = scn.rgb;
+
+    // Color interpolation with modulation control
+    float lerpAmount = clamp(1. - prm1, 0.05, 1.);
+    lerpAmount = mix(lerpAmount, 0.5, modulation);
+    col = iLerp(col.bgr, col.rgb, lerpAmount);
+
+    // Audio-reactive color grading
+    float brightness = clamp(pc.cc74, 0.0, 1.0);
+    vec3 powerCurve = vec3(.55, 0.65, 0.6);
+    powerCurve = mix(powerCurve, vec3(0.45, 0.5, 0.55), brightness);
+    col = pow(col, powerCurve) * vec3(1., .97, .9);
+
+    // Note count affects tint - optimized modulo
+    if(pc.note_count > 0u) {
+        float noteInfluence = float(pc.note_count % 4u) * 0.25; // Pre-compute division
+        vec3 tint = mix(vec3(1.0, 0.97, 0.9), vec3(0.9, 0.95, 1.1), noteInfluence);
+        col *= tint;
+    }
+
+    // Vignette with energy influence - optimized power calculation
+    float vignetteBase = 16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y);
+    float vignettePower = 0.12 - energy * 0.05;
+    float vignette = pow(vignetteBase, vignettePower);
+    col *= vignette * 0.7 + 0.3;
+
+    outColor = vec4(col, 1.0);
 }

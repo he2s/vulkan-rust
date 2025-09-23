@@ -2393,9 +2393,8 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Self {
         let shader_presets = vec![
-            ShaderPreset::Torus,
+            //ShaderPreset::Torus,
             ShaderPreset::Terrain,
-            ShaderPreset::Crystal,
         ];
 
         let current_shader_index = shader_presets

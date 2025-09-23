@@ -19,9 +19,9 @@ validation_layers = true
 enabled = true
 
 [shader]
-preset = "terrain"
-custom_vertex_path = "shaders/custom.vert"
-custom_fragment_path = "shaders/custom.frag"
+#preset = "ComputeParticles"
+#custom_vertex_path = "shaders/custom.vert"
+#custom_fragment_path = "shaders/custom.frag"
 allow_runtime_switching = true
 
 [osc]
