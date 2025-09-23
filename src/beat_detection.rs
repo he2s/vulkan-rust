@@ -378,4 +378,31 @@ impl BeatDetector {
         self.current_bpm = 120.0;
         self.beat_interval = 0.5;
     }
+
+    /// Override BPM with a manual value
+    pub fn set_manual_bpm(&mut self, bpm: f32) {
+        if bpm >= 40.0 && bpm <= 300.0 {
+            self.current_bpm = bpm;
+            self.beat_interval = 60.0 / bpm;
+
+            // Clear automatic tempo estimates to prevent interference
+            self.tempo_estimates.clear();
+
+            // Update beat timing if we have a reference time
+            if self.last_beat_time > 0.0 {
+                let time_since_last = self.current_time - self.last_beat_time;
+                if time_since_last >= self.beat_interval as f64 {
+                    // We've passed the expected beat time, reset timing
+                    self.last_beat_time = self.current_time;
+                    self.total_beats += 1;
+                    self.current_beat_in_bar = (self.current_beat_in_bar + 1) % self.beats_per_bar;
+                }
+            }
+        }
+    }
+
+    /// Check if automatic tempo detection is active
+    pub fn is_auto_tempo_active(&self) -> bool {
+        !self.tempo_estimates.is_empty()
+    }
 }

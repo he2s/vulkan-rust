@@ -199,6 +199,30 @@ impl AudioState {
         }
     }
 
+    /// Override BPM with a manual value
+    pub fn set_manual_bpm(&mut self, bpm: f32) {
+        // Accept a wider range for manual input since validation is done at the UI level
+        if bpm >= 20.0 && bpm <= 999.0 {
+            self.current_bpm = bpm;
+
+            // Clear beat history to prevent interference with manual mode
+            self.beat_history.clear();
+
+            // Reset beat timing based on new BPM
+            let beat_interval_samples = (self.last_sample_rate as f64 * 60.0 / bpm as f64) as u64;
+            if self.samples_since_beat >= beat_interval_samples {
+                // We've passed the expected beat time, reset timing
+                self.samples_since_beat = 0;
+                self.total_beats += 1;
+            }
+        }
+    }
+
+    /// Check if the audio system is in manual tempo mode (no automatic detection)
+    pub fn is_manual_tempo_mode(&self) -> bool {
+        self.beat_history.is_empty()
+    }
+
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
         if self.ring.is_empty() {
             self.levels = AudioLevels::default();

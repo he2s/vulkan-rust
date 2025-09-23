@@ -2231,6 +2231,22 @@ impl InputManager {
 
         Ok(stream_config)
     }
+
+    /// Set manual BPM override for beat detection
+    pub fn set_manual_bpm(&mut self, bpm: f32) {
+        if let Ok(mut audio_state) = self.audio_state.try_lock() {
+            audio_state.set_manual_bpm(bpm);
+        }
+    }
+
+    /// Check if audio system is in manual tempo mode
+    pub fn is_manual_tempo_mode(&self) -> bool {
+        if let Ok(audio_state) = self.audio_state.try_lock() {
+            audio_state.is_manual_tempo_mode()
+        } else {
+            false
+        }
+    }
 }
 
 // ============================================================================
@@ -2258,6 +2274,12 @@ pub struct App {
     frame_count: u64,
     frame_count_since_log: u32,
     cached_window_size: (u32, u32),
+
+    // Tap tempo functionality
+    tap_times: VecDeque<Instant>,
+    manual_bpm: Option<f32>,
+    manual_tempo_mode: bool,
+    last_tap_display: Option<Instant>,
 }
 
 impl App {
@@ -2278,6 +2300,7 @@ impl App {
         // Extract values before moving config
         let is_fullscreen = config.window.fullscreen;
         let window_size = (config.window.width, config.window.height);
+        let tap_capacity = config.tap_tempo.max_tap_history + 2;
 
         Self {
             window: None,
@@ -2296,6 +2319,12 @@ impl App {
             frame_count: 0,
             frame_count_since_log: 0,
             cached_window_size: window_size,
+
+            // Tap tempo initialization
+            tap_times: VecDeque::with_capacity(tap_capacity),
+            manual_bpm: None,
+            manual_tempo_mode: false,
+            last_tap_display: None,
         }
     }
 
@@ -2372,6 +2401,56 @@ impl App {
         }
     }
 
+    fn handle_tap_tempo(&mut self) {
+        let now = Instant::now();
+        let tap_config = &self.config.tap_tempo;
+
+        // Add this tap to our history
+        self.tap_times.push_back(now);
+
+        // Keep only recent taps (using config values)
+        while let Some(&first_tap) = self.tap_times.front() {
+            if self.tap_times.len() > tap_config.max_tap_history
+                || now.duration_since(first_tap).as_secs() > tap_config.tap_timeout_seconds {
+                self.tap_times.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Calculate BPM if we have enough taps
+        if self.tap_times.len() >= 2 {
+            let mut intervals = Vec::new();
+            for i in 1..self.tap_times.len() {
+                let interval = self.tap_times[i].duration_since(self.tap_times[i-1]).as_secs_f32();
+                intervals.push(interval);
+            }
+
+            // Calculate average interval
+            let avg_interval = intervals.iter().sum::<f32>() / intervals.len() as f32;
+
+            // Convert to BPM (beats per minute)
+            let bpm = 60.0 / avg_interval;
+
+            // Only accept reasonable BPM values (using config values)
+            if bpm >= tap_config.min_bpm && bpm <= tap_config.max_bpm {
+                self.manual_bpm = Some(bpm);
+                self.manual_tempo_mode = true;
+                self.last_tap_display = Some(now);
+
+                // Set the manual BPM in the audio system
+                self.input_manager.set_manual_bpm(bpm);
+
+                println!("Tap tempo: {:.1} BPM (manual mode activated)", bpm);
+            } else {
+                println!("Tap tempo: {:.1} BPM out of range ({:.1}-{:.1})",
+                    bpm, tap_config.min_bpm, tap_config.max_bpm);
+            }
+        } else {
+            println!("Tap tempo: waiting for more taps...");
+        }
+    }
+
     fn get_push_constants(&mut self, elapsed: f32, w: u32, h: u32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
 
@@ -2419,11 +2498,33 @@ impl App {
 
     fn print_controls(&self) {
         println!("Controls:");
-        println!("  F11 - Toggle fullscreen");
-        println!("  F5  - Reload and recompile shaders");
-        println!("  ESC - Exit (or exit fullscreen)");
+        println!("  F11   - Toggle fullscreen");
+        println!("  F5    - Reload and recompile shaders");
+        println!("  ESC   - Exit (or exit fullscreen)");
+        println!("  SPACE - Tap tempo (set manual BPM)");
         if self.config.shader.allow_runtime_switching {
-            println!("  TAB - Cycle shaders");
+            println!("  TAB   - Cycle shaders");
+        }
+    }
+
+    fn update_window_title(&mut self) {
+        // Only update title every 30 frames (~0.5 seconds at 60fps) to avoid spam
+        if self.frame_count % 30 != 0 {
+            return;
+        }
+
+        if let Some(window) = &self.window {
+            let frame_state = self.input_manager.get_frame_state();
+            let base_title = &self.config.window.title;
+            let bpm = frame_state.beat.bpm;
+
+            let title = if self.manual_tempo_mode {
+                format!("{} - {:.1} BPM (Manual)", base_title, bpm)
+            } else {
+                format!("{} - {:.1} BPM (Auto)", base_title, bpm)
+            };
+
+            window.set_title(&title);
         }
     }
 }
@@ -2509,6 +2610,7 @@ impl ApplicationHandler for App {
                 }
                 PhysicalKey::Code(KeyCode::Tab) => self.cycle_shader(),
                 PhysicalKey::Code(KeyCode::F5) => self.reload_shaders(),
+                PhysicalKey::Code(KeyCode::Space) => self.handle_tap_tempo(),
                 _ => {}
             },
 
@@ -2526,6 +2628,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.update_fps_tracking();
+                self.update_window_title();
                 if let Some(start_time) = &self.start_time {
                     let elapsed = start_time.elapsed().as_secs_f32();
                     // Use cached window size to avoid system call

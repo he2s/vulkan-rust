@@ -58,6 +58,9 @@ pub struct Config {
 
     #[serde(default)]
     pub osc: OscConfig,
+
+    #[serde(default)]
+    pub tap_tempo: TapTempoConfig,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -126,6 +129,25 @@ pub enum ShaderPreset {
     ComputeParticles,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct TapTempoConfig {
+    /// Maximum number of recent taps to keep for BPM calculation
+    #[serde(default = "default_tap_history_size")]
+    pub max_tap_history: usize,
+
+    /// Timeout in seconds after which old taps are discarded
+    #[serde(default = "default_tap_timeout")]
+    pub tap_timeout_seconds: u64,
+
+    /// Minimum BPM value accepted
+    #[serde(default = "default_min_bpm")]
+    pub min_bpm: f32,
+
+    /// Maximum BPM value accepted
+    #[serde(default = "default_max_bpm")]
+    pub max_bpm: f32,
+}
+
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
 const DEFAULT_TITLE: &str = "Vulkan MIDI Pixel Shader";
@@ -151,6 +173,19 @@ const fn default_validation_layers() -> bool {
 #[allow(dead_code)]
 const fn default_osc_port() -> u16 {
     8000
+}
+
+const fn default_tap_history_size() -> usize {
+    8
+}
+const fn default_tap_timeout() -> u64 {
+    10
+}
+const fn default_min_bpm() -> f32 {
+    40.0
+}
+const fn default_max_bpm() -> f32 {
+    300.0
 }
 
 impl Default for WindowConfig {
@@ -182,6 +217,17 @@ impl Default for ShaderConfig {
             custom_vertex_path: None,
             custom_fragment_path: None,
             allow_runtime_switching: true,
+        }
+    }
+}
+
+impl Default for TapTempoConfig {
+    fn default() -> Self {
+        Self {
+            max_tap_history: default_tap_history_size(),
+            tap_timeout_seconds: default_tap_timeout(),
+            min_bpm: default_min_bpm(),
+            max_bpm: default_max_bpm(),
         }
     }
 }
