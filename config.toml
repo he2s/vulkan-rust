@@ -19,16 +19,60 @@ validation_layers = true
 enabled = true
 
 [shader]
-#preset = "torus"
-#preset = "terrain"
-#preset = "crystal"
-#preset = "weirdcrystal"
-#preset = "custom"
-#preset = "stars"
-#preset = "computeparticles"
-#custom_vertex_path = "shaders/custom.vert"
-#custom_fragment_path = "shaders/custom.frag"
+active_preset = "new"
 allow_runtime_switching = false
+
+[shader.presets.new]
+name = "New Fullscreen"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "cloud.frag"
+
+[shader.presets.torus]
+name = "Torus Fullscreen"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "gradient.frag"
+
+[shader.presets.terrain]
+name = "Terrain"
+enabled = true
+geometry_type = "vertices"
+vertex = "terrain.vert"
+fragment = "terrain.frag"
+
+[shader.presets.crystal]
+name = "Simple Crystal"
+enabled = true
+geometry_type = "points"
+vertex = "points.vert"
+geometry = "simple.geom"
+fragment = "simple_geometry.frag"
+
+[shader.presets.weirdcrystal]
+name = "Complex Crystal"
+enabled = true
+geometry_type = "points"
+vertex = "points.vert"
+geometry = "example.geom"
+fragment = "weird_crystal.frag"
+
+[shader.presets.stars]
+name = "Stars"
+enabled = true
+geometry_type = "vertices"
+vertex = "stars.vert"
+fragment = "stars.frag"
+
+[shader.presets.computeparticles]
+name = "Compute Particles"
+enabled = true
+geometry_type = "compute"
+vertex = "instanced_triangles.vert"
+fragment = "instanced_triangles.frag"
+compute = "point_generator.comp"
 
 [osc]
 enabled = true

@@ -3,6 +3,7 @@ use crate::input::osc::OscConfig;
 use anyhow::Result;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -104,29 +105,42 @@ pub struct AudioConfig {
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ShaderConfig {
-    #[serde(default = "default_shader_preset")]
-    pub preset: ShaderPreset,
-
-    #[serde(default)]
-    pub custom_vertex_path: Option<String>,
-
-    #[serde(default)]
-    pub custom_fragment_path: Option<String>,
+    #[serde(default = "default_active_preset")]
+    pub active_preset: String,
 
     #[serde(default = "default_true")]
     pub allow_runtime_switching: bool,
+
+    #[serde(default)]
+    pub presets: HashMap<String, ShaderPreset>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ShaderPreset {
+    pub name: String,
+
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    pub geometry_type: GeometryType,
+    pub vertex: String,
+
+    #[serde(default)]
+    pub geometry: Option<String>,
+
+    pub fragment: String,
+
+    #[serde(default)]
+    pub compute: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum ShaderPreset {
-    Torus,
-    Terrain,
-    Crystal,
-    WeirdCrystal,
-    Custom,
-    Stars,
-    ComputeParticles,
+pub enum GeometryType {
+    Fullscreen,
+    Points,
+    Vertices,
+    Compute,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -164,8 +178,8 @@ fn default_title() -> String {
 const fn default_true() -> bool {
     true
 }
-const fn default_shader_preset() -> ShaderPreset {
-    ShaderPreset::Torus
+fn default_active_preset() -> String {
+    "torus".to_string()
 }
 const fn default_validation_layers() -> bool {
     cfg!(debug_assertions)
@@ -212,11 +226,72 @@ impl Default for GraphicsConfig {
 
 impl Default for ShaderConfig {
     fn default() -> Self {
+        let mut presets = HashMap::new();
+
+        presets.insert("torus".to_string(), ShaderPreset {
+            name: "Torus Fullscreen".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Fullscreen,
+            vertex: "fullscreen.vert".to_string(),
+            geometry: None,
+            fragment: "gradient.frag".to_string(),
+            compute: None,
+        });
+
+        presets.insert("terrain".to_string(), ShaderPreset {
+            name: "Terrain".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Vertices,
+            vertex: "terrain.vert".to_string(),
+            geometry: None,
+            fragment: "terrain.frag".to_string(),
+            compute: None,
+        });
+
+        presets.insert("crystal".to_string(), ShaderPreset {
+            name: "Simple Crystal".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Points,
+            vertex: "points.vert".to_string(),
+            geometry: Some("simple.geom".to_string()),
+            fragment: "simple_geometry.frag".to_string(),
+            compute: None,
+        });
+
+        presets.insert("weirdcrystal".to_string(), ShaderPreset {
+            name: "Complex Crystal".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Points,
+            vertex: "points.vert".to_string(),
+            geometry: Some("example.geom".to_string()),
+            fragment: "weird_crystal.frag".to_string(),
+            compute: None,
+        });
+
+        presets.insert("stars".to_string(), ShaderPreset {
+            name: "Stars".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Vertices,
+            vertex: "stars.vert".to_string(),
+            geometry: None,
+            fragment: "stars.frag".to_string(),
+            compute: None,
+        });
+
+        presets.insert("computeparticles".to_string(), ShaderPreset {
+            name: "Compute Particles".to_string(),
+            enabled: true,
+            geometry_type: GeometryType::Compute,
+            vertex: "instanced_triangles.vert".to_string(),
+            geometry: None,
+            fragment: "instanced_triangles.frag".to_string(),
+            compute: Some("point_generator.comp".to_string()),
+        });
+
         Self {
-            preset: default_shader_preset(),
-            custom_vertex_path: None,
-            custom_fragment_path: None,
+            active_preset: default_active_preset(),
             allow_runtime_switching: true,
+            presets,
         }
     }
 }
@@ -261,18 +336,8 @@ impl Config {
 }
 
 #[allow(dead_code)]
-pub fn parse_shader_preset(shader_str: &str) -> ShaderPreset {
-    match shader_str.to_lowercase().as_str() {
-        "torus" => ShaderPreset::Torus,
-        "terrain" => ShaderPreset::Terrain,
-        "crystal" => ShaderPreset::Crystal,
-        "custom" => ShaderPreset::Custom,
-        "stars" => ShaderPreset::Stars,
-        _ => {
-            eprintln!("Unknown shader preset '{shader_str}', using default");
-            ShaderPreset::Torus
-        }
-    }
+pub fn validate_shader_preset(shader_str: &str, config: &Config) -> bool {
+    config.shader.presets.contains_key(shader_str)
 }
 
 pub fn load_or_create_config(config_path: &str) -> Result<Config> {
@@ -312,7 +377,7 @@ pub fn print_startup_info(config: &Config) {
             "Windowed"
         }
     );
-    println!("Shader: {:?}", config.shader.preset);
+    println!("Active Shader: {}", config.shader.active_preset);
     println!(
         "MIDI: {}",
         if config.midi.enabled {

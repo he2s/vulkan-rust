@@ -5,7 +5,7 @@
 
 // use statements
 use crate::config::config::{
-    Args, AudioConfig, Config, ShaderConfig, ShaderPreset,
+    Args, AudioConfig, Config, ShaderConfig, ShaderPreset, GeometryType,
     load_or_create_config, print_startup_info,
 };
 mod audio;
@@ -375,6 +375,16 @@ impl ShaderSources {
             GeometryMode::Trivial
         }
     }
+
+    pub fn geometry_mode_from_preset(preset: &ShaderPreset) -> GeometryMode {
+        match preset.geometry_type {
+            GeometryType::Fullscreen => GeometryMode::Trivial,
+            GeometryType::Points if preset.geometry.is_some() => GeometryMode::GeometryShader,
+            GeometryType::Points => GeometryMode::Trivial,
+            GeometryType::Vertices => GeometryMode::Trivial,
+            GeometryType::Compute => GeometryMode::ComputeGenerated,
+        }
+    }
 }
 
 fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
@@ -383,63 +393,66 @@ fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
 
 impl ShaderSources {
     pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
-        println!("load_preset----------------------");
+        println!("Loading preset: {}", preset.name);
+
+        // Try to load from external directory first if set
         if let Ok(dir) = std::env::var("SHADER_PRESET_DIR") {
-            println!("load_preset_dir----------------------");
-            let (vfile, ffile) = match preset {
-                ShaderPreset::Torus => ("fullscreen.vert", "gradient.frag"),
-                ShaderPreset::Terrain => ("terrain.vert", "terrain.frag"),
-                ShaderPreset::Crystal => ("points.vert", "simple_geometry.frag"),
-                ShaderPreset::WeirdCrystal => ("points.vert", "weird_crystal.frag"),
-                ShaderPreset::Stars => ("stars.vert", "stars.frag"),
-                ShaderPreset::ComputeParticles => ("instanced_triangles.vert", "instanced_triangles.frag"),
-                ShaderPreset::Custom => return Err(anyhow!("Custom shader requires paths")),
-            };
-            println!("{preset:?}--------------------------");
-            let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
-            let fpath = std::path::Path::new(&dir).join("shaders").join(ffile);
+            println!("Loading from external directory: {}", dir);
+            let shader_dir = std::path::Path::new(&dir).join("shaders");
+
+            let vpath = shader_dir.join(&preset.vertex);
+            let fpath = shader_dir.join(&preset.fragment);
+            let gpath = preset.geometry.as_ref().map(|g| shader_dir.join(g));
+
             if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
+                let geometry = if let Some(gpath) = gpath {
+                    try_read_to_string(&gpath)
+                } else {
+                    None
+                };
+
                 return Ok(Self {
                     vertex: vs,
-                    geometry: None,
+                    geometry,
                     fragment: fs,
                 });
             }
         }
 
-        println!("ohne dir {preset:?}--------------------------");
-        match preset {
-            ShaderPreset::Torus => Ok(Self {
-                vertex: include_str!("../shaders/fullscreen.vert").to_string(),
-                geometry: None,
-                fragment: include_str!("../shaders/gradient.frag").to_string(),
-            }),
-            ShaderPreset::Terrain => Ok(Self {
-                vertex: include_str!("../shaders/terrain.vert").to_string(),
-                geometry: None,
-                fragment: include_str!("../shaders/terrain.frag").to_string(),
-            }),
-            ShaderPreset::Crystal => Ok(Self {
-                vertex: include_str!("../shaders/points.vert").to_string(),
-                geometry: Some(include_str!("../shaders/simple.geom").to_string()),
-                fragment: include_str!("../shaders/simple_geometry.frag").to_string(),
-            }),
-            ShaderPreset::WeirdCrystal => Ok(Self {
-                vertex: include_str!("../shaders/points.vert").to_string(),
-                geometry: Some(include_str!("../shaders/example.geom").to_string()),
-                fragment: include_str!("../shaders/weird_crystal.frag").to_string(),
-            }),
-            ShaderPreset::Stars => Ok(Self {
-                vertex: include_str!("../shaders/stars.vert").to_string(),
-                geometry: None,
-                fragment: include_str!("../shaders/stars.frag").to_string(),
-            }),
-            ShaderPreset::ComputeParticles => Ok(Self {
-                vertex: include_str!("../shaders/instanced_triangles.vert").to_string(),
-                geometry: None,
-                fragment: include_str!("../shaders/instanced_triangles.frag").to_string(),
-            }),
-            ShaderPreset::Custom => Err(anyhow!("Custom shader requires paths")),
+        // Fall back to embedded shaders
+        println!("Loading embedded shaders for preset: {}", preset.name);
+
+        let vertex = Self::load_embedded_shader(&preset.vertex)?;
+        let fragment = Self::load_embedded_shader(&preset.fragment)?;
+        let geometry = if let Some(ref geom_path) = preset.geometry {
+            Some(Self::load_embedded_shader(geom_path)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            vertex,
+            geometry,
+            fragment,
+        })
+    }
+
+    fn load_embedded_shader(filename: &str) -> Result<String> {
+        match filename {
+            "fullscreen.vert" => Ok(include_str!("../shaders/fullscreen.vert").to_string()),
+            "gradient.frag" => Ok(include_str!("../shaders/gradient.frag").to_string()),
+            "terrain.vert" => Ok(include_str!("../shaders/terrain.vert").to_string()),
+            "terrain.frag" => Ok(include_str!("../shaders/terrain.frag").to_string()),
+            "points.vert" => Ok(include_str!("../shaders/points.vert").to_string()),
+            "simple.geom" => Ok(include_str!("../shaders/simple.geom").to_string()),
+            "simple_geometry.frag" => Ok(include_str!("../shaders/simple_geometry.frag").to_string()),
+            "example.geom" => Ok(include_str!("../shaders/example.geom").to_string()),
+            "weird_crystal.frag" => Ok(include_str!("../shaders/weird_crystal.frag").to_string()),
+            "stars.vert" => Ok(include_str!("../shaders/stars.vert").to_string()),
+            "stars.frag" => Ok(include_str!("../shaders/stars.frag").to_string()),
+            "instanced_triangles.vert" => Ok(include_str!("../shaders/instanced_triangles.vert").to_string()),
+            "instanced_triangles.frag" => Ok(include_str!("../shaders/instanced_triangles.frag").to_string()),
+            _ => Err(anyhow!("Unknown embedded shader: {}", filename)),
         }
     }
 
@@ -460,16 +473,14 @@ impl ShaderSources {
     }
 
     pub fn load_from_config(config: &ShaderConfig) -> Result<Self> {
-        if config.preset == ShaderPreset::Custom {
-            match (&config.custom_vertex_path, &config.custom_fragment_path) {
-                (Some(vert), Some(frag)) => Self::load_from_files(vert, frag),
-                _ => Err(anyhow!(
-                    "Custom shader preset requires both vertex and fragment paths"
-                )),
-            }
-        } else {
-            Self::load_preset(&config.preset)
+        let preset = config.presets.get(&config.active_preset)
+            .ok_or_else(|| anyhow!("Shader preset '{}' not found in config", config.active_preset))?;
+
+        if !preset.enabled {
+            return Err(anyhow!("Shader preset '{}' is disabled", config.active_preset));
         }
+
+        Self::load_preset(preset)
     }
 }
 
@@ -1531,7 +1542,10 @@ impl VulkanPipeline {
         let render_pass = unsafe { Self::create_render_pass(&context.device, swapchain.format)? };
 
         // Check if we should use compute generation
-        let use_compute_generation = shader_config.preset == ShaderPreset::ComputeParticles;
+        let use_compute_generation = shader_config.presets
+            .get(&shader_config.active_preset)
+            .map(|p| p.geometry_type == GeometryType::Compute)
+            .unwrap_or(false);
 
         // Create compute pipeline and descriptor sets first if needed
         let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
@@ -1652,7 +1666,7 @@ impl VulkanPipeline {
         _swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
     ) -> Result<(vk::Pipeline, GeometryMode)> {
-        println!("Loading shader preset: {:?}", shader_config.preset);
+        println!("Loading shader preset: {}", shader_config.active_preset);
         let shader_sources = ShaderSources::load_from_config(shader_config)?;
 
         println!("Compiling shaders...");
@@ -2378,7 +2392,7 @@ pub struct App {
     config: Config,
     is_fullscreen: bool,
     current_shader_index: usize,
-    shader_presets: Vec<ShaderPreset>,
+    shader_presets: Vec<String>,
     #[allow(dead_code)]
     frame_times: VecDeque<Instant>,
     last_fps_log: Instant,
@@ -2396,14 +2410,15 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Self {
-        let shader_presets = vec![
-            ShaderPreset::Torus,
-            //ShaderPreset::Terrain,
-        ];
+        let shader_presets: Vec<String> = config.shader.presets
+            .iter()
+            .filter(|(_, preset)| preset.enabled)
+            .map(|(key, _)| key.clone())
+            .collect();
 
         let current_shader_index = shader_presets
             .iter()
-            .position(|p| *p == config.shader.preset)
+            .position(|p| *p == config.shader.active_preset)
             .unwrap_or(0);
 
         let now = Instant::now();
@@ -2487,10 +2502,10 @@ impl App {
 
         self.current_shader_index = (self.current_shader_index + 1) % self.shader_presets.len();
         let new_preset = self.shader_presets[self.current_shader_index].clone();
-        self.config.shader.preset = new_preset.clone();
+        self.config.shader.active_preset = new_preset.clone();
 
         if let Some(gfx) = &mut self.gfx {
-            println!("Switching to shader: {new_preset:?}");
+            println!("Switching to shader: {new_preset}");
             if let Err(e) = unsafe { gfx.recreate_pipeline(&self.config.shader) } {
                 eprintln!("Failed to switch shader: {e}");
             }

@@ -9,7 +9,8 @@
       "Bash(cargo:*)",
       "Bash(grep:*)",
       "Bash(git checkout:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(timeout 10s cargo run --release)"
     ],
     "deny": [],
     "ask": []
