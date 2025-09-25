@@ -19,10 +19,16 @@ validation_layers = true
 enabled = true
 
 [shader]
-#preset = "ComputeParticles"
+#preset = "torus"
+#preset = "terrain"
+#preset = "crystal"
+#preset = "weirdcrystal"
+#preset = "custom"
+#preset = "stars"
+#preset = "computeparticles"
 #custom_vertex_path = "shaders/custom.vert"
 #custom_fragment_path = "shaders/custom.frag"
-allow_runtime_switching = true
+allow_runtime_switching = false
 
 [osc]
 enabled = true

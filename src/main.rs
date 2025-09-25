@@ -383,7 +383,9 @@ fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
 
 impl ShaderSources {
     pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
+        println!("load_preset----------------------");
         if let Ok(dir) = std::env::var("SHADER_PRESET_DIR") {
+            println!("load_preset_dir----------------------");
             let (vfile, ffile) = match preset {
                 ShaderPreset::Torus => ("fullscreen.vert", "gradient.frag"),
                 ShaderPreset::Terrain => ("terrain.vert", "terrain.frag"),
@@ -393,6 +395,7 @@ impl ShaderSources {
                 ShaderPreset::ComputeParticles => ("instanced_triangles.vert", "instanced_triangles.frag"),
                 ShaderPreset::Custom => return Err(anyhow!("Custom shader requires paths")),
             };
+            println!("{preset:?}--------------------------");
             let vpath = std::path::Path::new(&dir).join("shaders").join(vfile);
             let fpath = std::path::Path::new(&dir).join("shaders").join(ffile);
             if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
@@ -404,6 +407,7 @@ impl ShaderSources {
             }
         }
 
+        println!("ohne dir {preset:?}--------------------------");
         match preset {
             ShaderPreset::Torus => Ok(Self {
                 vertex: include_str!("../shaders/fullscreen.vert").to_string(),
@@ -2393,8 +2397,8 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Self {
         let shader_presets = vec![
-            //ShaderPreset::Torus,
-            ShaderPreset::Terrain,
+            ShaderPreset::Torus,
+            //ShaderPreset::Terrain,
         ];
 
         let current_shader_index = shader_presets

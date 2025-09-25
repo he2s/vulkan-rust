@@ -18,211 +18,116 @@ layout(push_constant) uniform PushConstants {
     uint  render_h;
 } pc;
 
-layout(location = 0) in vec2 frag_uv;
-layout(location = 1) in flat uint frag_instance_id;
-layout(location = 2) in vec2 frag_screen_pos;
+layout(location = 0) in vec2 fragUV;
+layout(location = 1) in float vertexEnergy;
+layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-#define PI 3.14159265359
-
-// --------------------------------------------------------
-// Simplex(ish) Noise
-// --------------------------------------------------------
-
-vec3 hash33(vec3 p) {
-    float n = sin(dot(p, vec3(7, 157, 113)));
-    return fract(vec3(2097152, 262144, 32768)*n)*2. - 1.;
-}
-
-float tetraNoise(in vec3 p) {
-    vec3 i = floor(p + dot(p, vec3(0.333333)));
-    p -= i - dot(i, vec3(0.166666));
-    vec3 i1 = step(p.yzx, p), i2 = max(i1, 1.0-i1.zxy);
-    i1 = min(i1, 1.0-i1.zxy);
-    vec3 p1 = p - i1 + 0.166666, p2 = p - i2 + 0.333333, p3 = p - 0.5;
-    vec4 v = max(0.5 - vec4(dot(p,p), dot(p1,p1), dot(p2,p2), dot(p3,p3)), 0.0);
-    vec4 d = vec4(dot(p, hash33(i)), dot(p1, hash33(i + i1)), dot(p2, hash33(i + i2)), dot(p3, hash33(i + 1.)));
-    return clamp(dot(d, v*v*v*8.)*1.732 + .5, 0., 1.);
-}
-
-// --------------------------------------------------------
-// Rectangle distance function
-// --------------------------------------------------------
-
-float sRect(vec2 p, vec2 size) {
-    vec2 d = abs(p) - size;
-    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
-// --------------------------------------------------------
-// Smooth repeat functions
-// --------------------------------------------------------
-
-vec2 smoothRepeatStart(float x, float size) {
-    return vec2(
-    mod(x - size / 2., size),
-    mod(x, size)
-    );
-}
-
-float smoothRepeatEnd(float a, float b, float x, float size) {
-    return mix(a, b,
-    smoothstep(
-    0., 1.,
-    sin((x / size) * PI * 2. - PI * .5) * .5 + .5
-    )
-    );
-}
-
 void main() {
-    // Get resolution
+    // Resolution setup
     vec2 iResolution = (pc.render_w > 0u && pc.render_h > 0u)
     ? vec2(pc.render_w, pc.render_h)
     : vec2(800.0, 600.0);
 
-    vec2 fragCoord = frag_uv * iResolution;
-
-    // Square uv centered and scaled to the screen height
-    vec2 uv = (-iResolution.xy + 2. * fragCoord.xy) / iResolution.y;
+    // Convert UV to Shadertoy-style coordinates
+    vec2 u = fragUV * iResolution;
 
     // Audio-reactive parameters
-    float energyLevel = clamp(pc.note_velocity, 0.0, 1.0);
-    float pitchFactor = clamp(pc.pitch_bend, -1.0, 1.0);
+    float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
     float brightness = clamp(pc.cc74, 0.0, 1.0);
+    float bend = clamp(pc.pitch_bend, -1.0, 1.0);
 
-    // Zoom varies with energy level
-    float zoom = mix(2.0, 1.2, energyLevel);
-    uv /= zoom;
-
-    // Audio-reactive time scaling
-    float timeScale = mix(0.5, 2.0, modulation);
+    // Time with audio modulation
+    float timeScale = mix(0.7, 1.3, modulation);
     float iTime = pc.time * timeScale;
 
-    // Repeat size varies with pitch bend
-    float repeatSize = mix(3.0, 6.0, abs(pitchFactor));
-    float x = uv.x - mod(iTime, repeatSize / 2.);
-    float y = uv.y;
+    // Mouse/OSC interactivity
+    vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
+    vec2 interactiveOffset = vec2(0.0);
 
-    vec2 ab; // two sample points on one axis
-    float noise;
-    float noiseA, noiseB;
-
-    // Audio-reactive noise scaling
-    float noiseIntensity = mix(0.5, 2.0, energyLevel);
-
-    // Blend noise at different frequencies, moving in different directions
-    ab = smoothRepeatStart(x, repeatSize);
-    noiseA = tetraNoise(16.+vec3(vec2(ab.x, uv.y) * 1.2, 0)) * 0.5 * noiseIntensity;
-    noiseB = tetraNoise(16.+vec3(vec2(ab.y, uv.y) * 1.2, 0)) * 0.5 * noiseIntensity;
-    noise = smoothRepeatEnd(noiseA, noiseB, x, repeatSize);
-
-    ab = smoothRepeatStart(y, repeatSize / 2.);
-    noiseA = tetraNoise(vec3(vec2(uv.x, ab.x) * 0.5, 0)) * 2.0;
-    noiseB = tetraNoise(vec3(vec2(uv.x, ab.y) * 0.5, 0)) * 2.0;
-    noise *= smoothRepeatEnd(noiseA, noiseB, y, repeatSize / 2.);
-
-    // High frequency detail controlled by CC74
-    float detailScale = mix(0.05, 0.15, brightness);
-    ab = smoothRepeatStart(x, repeatSize);
-    noiseA = tetraNoise(9.+vec3(vec2(ab.x, uv.y) * detailScale, 0)) * 5.;
-    noiseB = tetraNoise(9.+vec3(vec2(ab.y, uv.y) * detailScale, 0)) * 5.;
-    noise *= smoothRepeatEnd(noiseA, noiseB, x, repeatSize);
-
-    noise *= 0.75;
-
-    // Gradient direction changes with OSC or mouse input
-    vec2 gradientDir = vec2(-0.66, 1.0) * 0.4;
-
-    if (pc.osc_ch1 != 0.0 || pc.osc_ch2 != 0.0) {
-        // Use OSC input to control gradient direction
-        gradientDir.x += pc.osc_ch1 * 0.5;
-        gradientDir.y += pc.osc_ch2 * 0.5;
-    } else if (pc.mouse_pressed > 0u) {
-        // Use mouse input as fallback
-        vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
-        mouseNorm = (mouseNorm - 0.5) * 2.0;
-        gradientDir += mouseNorm * 0.3;
+    if (pc.mouse_pressed > 0u) {
+        interactiveOffset = (mouseNorm - 0.5) * 0.1;
+    } else if (abs(pc.osc_ch1) + abs(pc.osc_ch2) > 0.01) {
+        interactiveOffset = vec2(pc.osc_ch1, pc.osc_ch2) * 0.05;
     }
 
-    // Blend with gradient orientation
-    noise = mix(noise, dot(uv, gradientDir), 0.6);
+    // Apply interactive offset before normalization
+    u += interactiveOffset * iResolution.y;
 
-    // Audio-reactive line spacing
-    float spacing = mix(1./30., 1./80., brightness);
-    float lines = mod(noise, spacing) / spacing;
+    // === Port of the compact shader ===
+    vec2 v = iResolution.xy;
+    u = 0.2 * (u + u - v) / v.y;
 
-    // Convert sawtooth to triangle wave
-    lines = min(lines * 2., 1.) - max(lines * 2. - 1., 0.);
+    // Scale UV based on energy for zoom effect
+    u *= mix(1.0, 0.85, energy * 0.5);
 
-    lines /= fwidth(noise / spacing);
-    lines /= 2.;
+    // Apply pitch bend as rotation
+    if (abs(bend) > 0.01) {
+        float angle = bend * 0.5;
+        float c = cos(angle);
+        float s = sin(angle);
+        u = mat2(c, -s, s, c) * u;
+    }
 
-    // Rectangle distance - size varies with note count and energy
-    vec2 rectSize = vec2(0.4, 0.25);
+    vec4 z = vec4(1, 2, 3, 0);
+    vec4 o = z;
 
-    // Scale rectangle with note count
+    // Main iteration loop with audio modulation
+    float a = 0.5;
+    float t = iTime;
+
+    // Adjust iteration count based on energy (19 base, up to 21 with high energy)
+    int maxIters = 19 + int(energy * 2.0);
+
+    for (int iter = 1; iter < maxIters; iter++) {
+        float i = float(iter);
+
+        // Core calculation from original
+        o += (1.0 + cos(z + t))
+        / length((1.0 + i * dot(v, v))
+        * sin(1.5 * u / (0.5 - dot(u, u)) - 9.0 * u.yx + t));
+
+        // Update v with modulation influence
+        t += 1.0;
+        a += 0.03 * mix(1.0, 1.2, modulation);
+        v = cos(t - 7.0 * u * pow(a, i)) - 5.0 * u;
+
+        // Transform u with rotation matrix
+        vec4 angles = vec4(0, 11, 33, 0);
+        float timemod = 0.02 * t * mix(1.0, 1.5, brightness);
+        mat2 rot = mat2(cos(i + timemod - angles));
+        u *= rot;
+
+        // Complex feedback with audio reactivity
+        float feedback = 40.0 * mix(1.0, 1.5, energy);
+        u += tanh(feedback * dot(u, u) * cos(100.0 * u.yx + t)) / 200.0
+        + 0.2 * a * u
+        + cos(4.0 / exp(dot(o, o) / 100.0) + t) / 300.0;
+    }
+
+    // Final color calculation
+    o = 25.6 / (min(o, 13.0) + 164.0 / o) - dot(u, u) / 250.0;
+
+    // Enhance with vertex energy
+    o *= (1.0 + vertexEnergy * 0.3);
+
+    // Apply brightness control
+    o = mix(o, o * 1.5, brightness * 0.7);
+
+    // Color grading based on note count
     if (pc.note_count > 0u) {
-        float noteScale = 1.0 + float(pc.note_count) * 0.05;
-        rectSize *= noteScale;
+        float noteInfluence = float(pc.note_count) / 10.0;
+        o.rgb = mix(o.rgb, o.gbr, clamp(noteInfluence, 0.0, 0.3));
     }
 
-    // Deform rectangle with pitch bend
-    rectSize.x *= (1.0 + pitchFactor * 0.3);
-    rectSize.y *= (1.0 - pitchFactor * 0.2);
+    // Saturation boost with CC1
+    vec3 color = o.rgb;
+    float lum = dot(color, vec3(0.299, 0.587, 0.114));
+    color = mix(vec3(lum), color, 1.0 + modulation * 0.5);
 
-    // Position offset with modulation
-    vec2 rectPos = uv + vec2(0.0, modulation * 0.1);
-
-    float d = sRect(rectPos, rectSize);
-
-    // Create fuzzy border - sharpness varies with energy
-    float borderSharpness = mix(0.02, 0.08, energyLevel);
-    float weight = smoothstep(0.0, borderSharpness, d);
-
-    // Audio-reactive line weight
-    float innerWeight = mix(3.0, 6.0, energyLevel);
-    float outerWeight = mix(0.8, 1.5, brightness);
-    weight = mix(innerWeight, outerWeight, weight);
-
-    // Scale weight with resolution
-    weight *= iResolution.y / 287.;
-
-    // Offset the line by the weight
-    lines -= weight - 1.;
-
-    // Invert for high energy sections
-    if (energyLevel > 0.8) {
-        lines = 1. - lines;
-    }
-
-    // Add some color tinting based on audio
-    vec3 color = vec3(lines);
-
-    // Subtle color shifts
-    if (modulation > 0.1) {
-        color.r *= (1.0 + modulation * 0.2);
-        color.b *= (1.0 + brightness * 0.15);
-    }
-
-    // Contrast boost for high frequencies
-    color = mix(color, color * color, brightness * 0.3);
-
-    // Add per-instance color variation using optimized approach
-    float instance_factor = float(frag_instance_id % 16u) / 16.0; // Back to modulo for correctness
-
-    // Pre-computed phase offsets for better performance
-    const float phase1 = 2.09439;
-    const float phase2 = 4.18879;
-    float base_angle = instance_factor * 6.28318;
-
-    vec3 instance_color = vec3(
-        0.5 + 0.5 * sin(base_angle),
-        0.5 + 0.5 * sin(base_angle + phase1),
-        0.5 + 0.5 * sin(base_angle + phase2)
-    );
-    color *= mix(vec3(1.0), instance_color, 0.3);
-
+    // Final output with gamma correction
+    color = pow(max(color, 0.0), vec3(2.75));
     outColor = vec4(color, 1.0);
 }

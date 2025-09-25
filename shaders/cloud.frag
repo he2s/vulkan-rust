@@ -327,7 +327,7 @@ void main() {
 
     // Note count affects tint - optimized modulo
     if(pc.note_count > 0u) {
-        float noteInfluence = float(pc.note_count % 4u) * 0.25; // Pre-compute division
+        float noteInfluence = float(pc.note_count % 4u) * 0.25; // Pre-comp division
         vec3 tint = mix(vec3(1.0, 0.97, 0.9), vec3(0.9, 0.95, 1.1), noteInfluence);
         col *= tint;
     }
