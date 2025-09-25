@@ -55,7 +55,7 @@ mat2 rot(in float a) {
     return mat2(c, s, -s, c);
 }
 
-// Pre-computed matrix constant
+// Pre-comptd matrix constant
 const mat3 m3 = mat3(0.33338, 0.56034, -0.71817,
 -0.87887, 0.32651, -0.15323,
 0.15162, 0.69596, 0.61339) * 1.93;
@@ -68,12 +68,12 @@ float linstep(in float mn, in float mx, in float x) {
     return clamp((x - mn)/(mx - mn), 0., 1.);
 }
 
-// Optimized displacement with pre-computed constants
+// Optimized displacement with pre-comptd constants
 const float DISP_FREQ1 = 0.22;
 const float DISP_FREQ2 = 0.175;
 
 vec2 disp(float t) {
-    // Pre-compute audio parameters once
+    // Pre-compt audio parameters once
     float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
 
@@ -105,7 +105,7 @@ vec2 map(vec3 p) {
     float z = 1.;
     float trk = 1.;
 
-    // Pre-compute displacement amplitude
+    // Pre-compt displacement amplitude
     float dspAmp = 0.1 + prm1 * 0.2 + energy * 0.15;
 
     // Determine iteration count based on quality and brightness
@@ -115,7 +115,7 @@ vec2 map(vec3 p) {
     int iterations = min(FRACTAL_ITERATIONS, 4 + int(brightness * 2.0));
     #endif
 
-    // Optimized fractal loop with pre-computed values
+    // Optimized fractal loop with pre-comptd values
     for(int i = 0; i < FRACTAL_ITERATIONS; i++) {
         if(i >= iterations) break;
 
@@ -171,7 +171,7 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
 
         vec4 col = vec4(0);
         if (mpv.x > 0.6) {
-            // Pre-compute base color
+            // Pre-compt base color
             vec3 baseColor = vec3(5., 0.4, 0.2);
 
             // Optimized note influence calculation
@@ -183,7 +183,7 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
             // Add OSC color influence
             baseColor.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
 
-            // Optimized color calculation - pre-compute common terms
+            // Optimized color calculation - pre-compt common terms
             float posZ = sin(pos.z * 0.4) * 0.5 + 1.8;
             col = vec4(sin(baseColor + mpv.y * 0.1 + posZ) * 0.5 + 0.5, 0.08);
 
@@ -202,7 +202,7 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
             float dif = clamp((den - map(pos + 0.5).x) / 6., 0.001, 1.);
             #endif
 
-            // Pre-compute and combine light colors
+            // Pre-compt and combine light colors
             vec3 lightColor = vec3(0.005, .045, .075) + 1.5 * vec3(0.033, 0.07, 0.03) * dif;
             lightColor *= (1.0 + brightness * 0.5);
             col.xyz *= den * lightColor;
@@ -221,7 +221,7 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
         // Accumulation
         rez = rez + col * (1. - rez.a);
 
-        // Dynamic step size with pre-computed factor
+        // Dynamic step size with pre-comptd factor
         t += clamp(0.5 - dn * dn * 0.05, 0.09, 0.3);
     }
 
@@ -240,7 +240,7 @@ vec3 iLerp(in vec3 a, in vec3 b, in float x) {
     vec3 ic = mix(a, b, x) + vec3(1e-6, 0., 0.);
     float sd = abs(getsat(ic) - mix(getsat(a), getsat(b), x));
 
-    // Pre-compute common terms
+    // Pre-compt common terms
     float icX2 = 2. * ic.x;
     float icY2 = 2. * ic.y;
     float icZ2 = 2. * ic.z;
