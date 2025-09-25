@@ -438,21 +438,13 @@ impl ShaderSources {
     }
 
     fn load_embedded_shader(filename: &str) -> Result<String> {
-        match filename {
-            "fullscreen.vert" => Ok(include_str!("../shaders/fullscreen.vert").to_string()),
-            "gradient.frag" => Ok(include_str!("../shaders/gradient.frag").to_string()),
-            "terrain.vert" => Ok(include_str!("../shaders/terrain.vert").to_string()),
-            "terrain.frag" => Ok(include_str!("../shaders/terrain.frag").to_string()),
-            "points.vert" => Ok(include_str!("../shaders/points.vert").to_string()),
-            "simple.geom" => Ok(include_str!("../shaders/simple.geom").to_string()),
-            "simple_geometry.frag" => Ok(include_str!("../shaders/simple_geometry.frag").to_string()),
-            "example.geom" => Ok(include_str!("../shaders/example.geom").to_string()),
-            "weird_crystal.frag" => Ok(include_str!("../shaders/weird_crystal.frag").to_string()),
-            "stars.vert" => Ok(include_str!("../shaders/stars.vert").to_string()),
-            "stars.frag" => Ok(include_str!("../shaders/stars.frag").to_string()),
-            "instanced_triangles.vert" => Ok(include_str!("../shaders/instanced_triangles.vert").to_string()),
-            "instanced_triangles.frag" => Ok(include_str!("../shaders/instanced_triangles.frag").to_string()),
-            _ => Err(anyhow!("Unknown embedded shader: {}", filename)),
+        use std::path::Path;
+        use std::fs;
+
+        let shader_path = Path::new("shaders").join(filename);
+        match fs::read_to_string(&shader_path) {
+            Ok(content) => Ok(content),
+            Err(e) => Err(anyhow!("Failed to load shader '{}': {}", shader_path.display(), e)),
         }
     }
 
@@ -1550,7 +1542,7 @@ impl VulkanPipeline {
         // Create compute pipeline and descriptor sets first if needed
         let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
             if use_compute_generation {
-                unsafe { Self::create_compute_pipeline(&context.device, buffers)? }
+                unsafe { Self::create_compute_pipeline(&context.device, buffers, shader_config)? }
             } else {
                 (vk::PipelineLayout::null(), vk::Pipeline::null(), vk::DescriptorSetLayout::null(),
                  vk::DescriptorPool::null(), vk::DescriptorSet::null())
@@ -1934,6 +1926,7 @@ impl VulkanPipeline {
     unsafe fn create_compute_pipeline(
         device: &ash::Device,
         buffers: &VulkanBuffers,
+        shader_config: &ShaderConfig,
     ) -> Result<(vk::PipelineLayout, vk::Pipeline, vk::DescriptorSetLayout, vk::DescriptorPool, vk::DescriptorSet)> {
         // Create descriptor set layout for storage buffer
         let binding = vk::DescriptorSetLayoutBinding {
@@ -1970,8 +1963,17 @@ impl VulkanPipeline {
         let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
 
         // Compile compute shader
-        let compute_source = include_str!("../shaders/point_generator.comp");
-        let compute_code = unsafe { Self::compile_shader(compute_source, shaderc::ShaderKind::Compute)? };
+        let active_preset = shader_config.presets
+            .get(&shader_config.active_preset)
+            .ok_or_else(|| anyhow!("Active preset '{}' not found", shader_config.active_preset))?;
+
+        let compute_filename = active_preset.compute
+            .as_ref()
+            .ok_or_else(|| anyhow!("No compute shader specified for preset '{}'", shader_config.active_preset))?;
+
+        let compute_source = std::fs::read_to_string(format!("shaders/{}", compute_filename))
+            .map_err(|e| anyhow!("Failed to load compute shader '{}': {}", compute_filename, e))?;
+        let compute_code = unsafe { Self::compile_shader(&compute_source, shaderc::ShaderKind::Compute)? };
         let compute_module = unsafe { Self::create_shader_module(device, &compute_code)? };
 
         // Create compute pipeline
