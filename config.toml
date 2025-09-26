@@ -30,12 +30,19 @@ geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "wildbeauty.frag"
 
+[shader.presets.new2]
+name = "New Fullscreen2"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "wildbeauty2.frag"
+
 [shader.presets.torus]
 name = "Torus Fullscreen"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "simple_geometry.frag"
+fragment = "cloud2.frag"
 
 [shader.presets.terrain]
 name = "Terrain"
