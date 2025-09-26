@@ -42,7 +42,7 @@ name = "Torus Fullscreen"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "cloud2.frag"
+fragment = "cloud3.frag"
 
 [shader.presets.terrain]
 name = "Terrain"

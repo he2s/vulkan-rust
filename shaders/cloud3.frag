@@ -73,19 +73,15 @@ const float DISP_FREQ1 = 0.22;
 const float DISP_FREQ2 = 0.175;
 
 vec2 disp(float t) {
-    // CHAOTIC audio parameters - cached
+    // CHAOTIC audio parameters
     float energy = clamp(pc.note_velocity, 0.0, 1.0);
     float modulation = clamp(pc.cc1, 0.0, 1.0);
 
     float ampScale = 2.0 + energy * 3.0 + modulation * 2.0;
-    // OPTIMIZED WEIRD DISTORTIONS - reduced trig calls
-    float t1 = t * DISP_FREQ1 * 3.0;
-    float t2 = t * DISP_FREQ2 * 2.7;
-    vec2 chaos = vec2(sin(t1), cos(t2));
-
-    float t3 = t * 0.05;
-    chaos += vec2(sin(t3 + energy * 10.0), cos(t3 * 1.6 - modulation * 8.0)) * 1.5;
-    chaos += vec2(sin(t * 0.3), sin(t * 0.11)) * 0.8; // Removed expensive cos*sin
+    // WEIRD DISTORTIONS with multiple frequencies
+    vec2 chaos = vec2(sin(t * DISP_FREQ1 * 3.0), cos(t * DISP_FREQ2 * 2.7));
+    chaos += vec2(sin(t * 0.05 + energy * 10.0), cos(t * 0.08 - modulation * 8.0)) * 1.5;
+    chaos += vec2(sin(t * 0.3) * cos(t * 0.17), sin(t * 0.11) * cos(t * 0.23)) * 0.8;
     return chaos * ampScale;
 }
 
@@ -126,37 +122,34 @@ vec2 map(vec3 p) {
     for(int i = 0; i < FRACTAL_ITERATIONS; i++) {
         if(i >= iterations) break;
 
-        // OPTIMIZED CHAOTIC calculations
+        // WILD CHAOTIC calculations
         float vertInfluence = 1.0 + vertexEnergy * 0.5;
-        float timeScale = iTime * trk;
-        vec3 sinOffset = sin(p.zxy * (1.5 * trk) + timeScale * 1.6);
-        vec3 cosOffset = cos(p.xzy * (1.3 * trk) - timeScale * 1.2);
-        p += (sinOffset + cosOffset * 0.7) * dspAmp * vertInfluence;
-        // Removed expensive tan calculation
+        vec3 sinOffset = sin(p.zxy * (1.5 * trk) + (iTime * trk * 1.6));
+        vec3 cosOffset = cos(p.xzy * (1.3 * trk) - (iTime * trk * 1.2));
+        vec3 tanOffset = tan(p.yxz * (0.9 * trk) + (iTime * trk * 2.1)) * 0.3;
+        p += (sinOffset + cosOffset * 0.7 + tanOffset) * dspAmp * vertInfluence;
 
-        // OPTIMIZED trigonometric - fewer calls
-        vec3 sp = sin(p);
-        vec3 cp = cos(p);
-        d -= abs(dot(cp * 1.3, sp.yzx * 1.1) * z);
-        d += abs(dot(sp * 0.7, cp.zxy * 1.4) * z * 0.5);
+        // TWISTED trigonometric mayhem
+        d -= abs(dot(cos(p * 1.3), sin(p.yzx * 1.1)) * z);
+        d += abs(dot(sin(p * 0.7), cos(p.zxy * 1.4)) * z * 0.5);
+        d -= abs(dot(tan(p * 0.3), sin(p.yxz * 2.1)) * z * 0.3);
 
-        // OPTIMIZED iteration variables - precompe time values
-        float timeOffset = iTime + float(i);
-        z *= 0.47 + sin(timeOffset * 0.3) * 0.1;
-        trk *= 1.6 + cos(timeOffset * 0.5) * 0.2;
+        // WEIRD iteration variables with chaos
+        z *= 0.47 + sin(iTime * 0.3 + float(i)) * 0.1;
+        trk *= 1.6 + cos(iTime * 0.5 - float(i)) * 0.2;
         p = p * m3;
-        // SIMPLIFIED rotations - less frequent
-        if(i % 2 == 0) {
-            p.xy *= rot(timeOffset * 0.1);
-        }
+        // Add TWISTED rotations per iteration
+        p.xy *= rot(iTime * 0.1 + float(i) * 0.5);
+        p.yz *= rot(iTime * 0.07 - float(i) * 0.3);
     }
 
-    // OPTIMIZED density calculation
+    // CHAOTIC density calculation
     d = abs(d + prm1 * 5.) + prm1 * 0.8 - 1.8 + bsMo.y;
     d *= (1.0 - energy * 0.4);
-    // OPTIMIZED oscillations - calculate once here
-    vec3 sp = sin(p);
-    d += sp.x * 0.2 + cos(p.y) * 0.15 + sp.z * 0.1;
+    // Add WEIRD oscillations
+    d += sin(p.x * 3.0 + iTime * 2.0) * 0.2;
+    d += cos(p.y * 2.7 - iTime * 1.5) * 0.15;
+    d += sin(p.z * 1.9 + iTime * 3.2) * 0.1;
 
     return vec2(d + cl * 0.2 + 0.25, cl);
 }
@@ -204,12 +197,11 @@ vec4 render(in vec3 ro, in vec3 rd, float time) {
             // Add OSC color influence
             baseColor.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
 
-            // OPTIMIZED color calculation - fewer trig calls
+            // WILD color calculation with CHAOS
             float posZ = sin(pos.z * 0.8) * 0.3 + 0.9;
-            float timeMod = iTime * 0.5;
-            vec3 weirdColor = sin(baseColor * 2.0 + mpv.y * 0.3 + posZ + timeMod) * 0.3 + 0.2;
-            weirdColor += cos(baseColor * 1.5 + pos.x * 0.1) * 0.2; // Removed mpv.y calc
-            weirdColor *= 0.95; // Simplified instead of sin calculation
+            vec3 weirdColor = sin(baseColor * 2.0 + mpv.y * 0.3 + posZ + iTime * 0.5) * 0.3 + 0.2;
+            weirdColor += cos(baseColor * 1.5 - mpv.y * 0.2 + pos.x * 0.1) * 0.2;
+            weirdColor *= sin(pos.y * 0.3 + iTime * 0.7) * 0.1 + 0.9;
             col = vec4(weirdColor, 0.12);
 
             // Combine density multiplications
@@ -344,15 +336,14 @@ void main() {
     lerpAmount = mix(lerpAmount, 0.5, modulation);
     col = iLerp(col.bgr, col.rgb, lerpAmount);
 
-    // OPTIMIZED color grading - precomte values
+    // TWISTED color grading with DARKNESS
     float brightness = clamp(pc.cc74, 0.0, 1.0);
     vec3 powerCurve = vec3(.25, 0.35, 0.3);
     powerCurve = mix(powerCurve, vec3(0.15, 0.2, 0.25), brightness);
     col = pow(col, powerCurve) * vec3(0.6, .5, .4);
-    // SIMPLIFIED color shifts - one sin call
-    float timeShift = sin(iTime * 1.5);
-    col.rgb += sin(col.gbr * 3.0) * 0.1;
-    col.rgb *= 1.0 + timeShift * 0.2;
+    // Add WEIRD color shifts
+    col.rgb += sin(col.gbr * 3.0 + iTime * 2.0) * 0.1;
+    col.rgb *= 1.0 + sin(iTime * 1.5) * 0.2;
 
     // Note count affects tint - optimized modulo
     if(pc.note_count > 0u) {
