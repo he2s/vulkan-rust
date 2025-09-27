@@ -27,7 +27,7 @@ layout(location = 0) out vec4 outColor;
 // Quality settings - define QUALITY_LEVEL before including this shader
 // 0 = Low (fastest), 1 = Medium, 2 = High (original quality)
 #ifndef QUALITY_LEVEL
-#define QUALITY_LEVEL 2
+#define QUALITY_LEVEL 0
 #endif
 
 // Quality-dependent constants
@@ -354,9 +354,9 @@ void main() {
 
     // Vignette with energy influence - optimized power calculation
     float vignetteBase = 16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y);
-    float vignettePower = 0.12 - energy * 0.05;
+    float vignettePower = 2.82 - energy * 0.05;
     float vignette = pow(vignetteBase, vignettePower);
-    col *= vignette * 0.7 + 0.3;
+    col *= vignette * 0.5 + 0.5;
 
     outColor = vec4(col, 1.0);
 }
