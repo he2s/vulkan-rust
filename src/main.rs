@@ -572,8 +572,8 @@ impl Gfx {
     /// # Safety
     /// This function is unsafe because it creates Vulkan resources and calls unsafe Vulkan functions.
     /// The caller must ensure that the window handle is valid and that Vulkan is properly initialized.
-    pub unsafe fn new(window: &Window, shader_config: &ShaderConfig, vsync: bool) -> Result<Self> {
-        let context = unsafe { VulkanContext::new(window)? };
+    pub unsafe fn new(window: &Window, shader_config: &ShaderConfig, vsync: bool, validation_layers: bool) -> Result<Self> {
+        let context = unsafe { VulkanContext::new(window, validation_layers)? };
         let swapchain = unsafe { VulkanSwapchain::new(&context, window, vsync)? };
         let buffers = unsafe { VulkanBuffers::new(&context)? };
         let pipeline = unsafe { VulkanPipeline::new(&context, &swapchain, shader_config, &buffers)? };
@@ -921,6 +921,9 @@ impl Gfx {
     }
 
     unsafe fn submit_commands(&self, cmd_buffer: vk::CommandBuffer) -> Result<()> {
+        // Ensure queue is idle before signaling semaphores to avoid VUID-vkQueueSubmit-pSignalSemaphores-00067
+        unsafe { self.context.device.queue_wait_idle(self.context.queue)? };
+
         let wait_semaphores = [self.sync.image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.sync.render_finished];
@@ -973,14 +976,14 @@ impl Gfx {
 
 // VulkanContext implementation - handles Vulkan instance and device creation
 impl VulkanContext {
-    unsafe fn new(window: &Window) -> Result<Self> {
+    unsafe fn new(window: &Window, validation_layers: bool) -> Result<Self> {
         let entry = Entry::linked();
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let required_extensions =
             ash_window::enumerate_required_extensions(display_handle)?.to_vec();
 
-        let instance = unsafe { Self::create_instance(&entry, &required_extensions)? };
+        let instance = unsafe { Self::create_instance(&entry, &required_extensions, validation_layers)? };
         let surface =
             unsafe { ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)? };
         let surface_loader = surface::Instance::new(&entry, &instance);
@@ -1004,10 +1007,11 @@ impl VulkanContext {
     unsafe fn create_instance(
         entry: &Entry,
         required_extensions: &[*const c_char],
+        validation_layers: bool,
     ) -> Result<ash::Instance> {
         let app_name = CString::new("vulkan-pixel-shader")?;
 
-        let layer_names: Vec<CString> = if cfg!(debug_assertions) {
+        let layer_names: Vec<CString> = if validation_layers {
             vec![CString::new("VK_LAYER_KHRONOS_validation")?]
         } else {
             vec![]
@@ -1539,6 +1543,10 @@ impl VulkanPipeline {
             .map(|p| p.geometry_type == GeometryType::Compute)
             .unwrap_or(false);
 
+        // Determine geometry mode from shader sources first
+        let shader_sources = ShaderSources::load_from_config(shader_config)?;
+        let geometry_mode = shader_sources.determine_geometry_mode();
+
         // Create compute pipeline and descriptor sets first if needed
         let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
             if use_compute_generation {
@@ -1550,14 +1558,10 @@ impl VulkanPipeline {
 
         // Create graphics pipeline layout with optional descriptor set layout
         let pipeline_layout = if use_compute_generation {
-            unsafe { Self::create_graphics_pipeline_layout(&context.device, Some(descriptor_set_layout))? }
+            unsafe { Self::create_graphics_pipeline_layout(&context.device, Some(descriptor_set_layout), geometry_mode)? }
         } else {
-            unsafe { Self::create_graphics_pipeline_layout(&context.device, None)? }
+            unsafe { Self::create_graphics_pipeline_layout(&context.device, None, geometry_mode)? }
         };
-
-        // Determine geometry mode from shader sources
-        let shader_sources = ShaderSources::load_from_config(shader_config)?;
-        let geometry_mode = shader_sources.determine_geometry_mode();
 
         let (pipeline, _) = unsafe { Self::create_graphics_pipeline(
             &context.device,
@@ -1625,9 +1629,19 @@ impl VulkanPipeline {
     unsafe fn create_graphics_pipeline_layout(
         device: &ash::Device,
         descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+        geometry_mode: GeometryMode,
     ) -> Result<vk::PipelineLayout> {
+        let stage_flags = match geometry_mode {
+            GeometryMode::GeometryShader => {
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::GEOMETRY | vk::ShaderStageFlags::FRAGMENT
+            }
+            _ => {
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT
+            }
+        };
+
         let push_constant_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::GEOMETRY | vk::ShaderStageFlags::FRAGMENT,
+            stage_flags,
             offset: 0,
             size: std::mem::size_of::<PushConstants>() as u32,
         };
@@ -2681,7 +2695,7 @@ impl ApplicationHandler for App {
             .create_window(attributes)
             .expect("Failed to create window");
         let gfx = unsafe {
-            Gfx::new(&window, &self.config.shader, self.config.graphics.vsync)
+            Gfx::new(&window, &self.config.shader, self.config.graphics.vsync, self.config.graphics.validation_layers)
                 .expect("Failed to initialize Vulkan")
         };
 

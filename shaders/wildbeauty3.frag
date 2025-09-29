@@ -19,8 +19,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(location = 0) in vec2 fragUV;
-layout(location = 1) in float vertexEnergy;
-layout(location = 2) in vec3 worldPos;
+layout(location = 1) in vec2 frag_screen_pos;
 
 layout(location = 0) out vec4 outColor;
 
@@ -167,6 +166,7 @@ vec2 sdf(vec3 p) {
     p *= rotZ(t * 0.3 + pc.pitch_bend * PI);
 
     // MASSIVE ring system with chaos
+    float vertexEnergy = length(frag_screen_pos) * 0.5; // Derive energy from screen position
     float ringRadius = 1.5 + vertexEnergy * 0.5 + sin(t) * 0.3;
     float ringThickness = 0.1 + energy * 0.15 + cos(t * 2.0) * 0.05;
     vec2 torusParams = vec2(ringRadius, ringThickness);

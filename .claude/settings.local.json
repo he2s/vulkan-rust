@@ -10,7 +10,8 @@
       "Bash(grep:*)",
       "Bash(git checkout:*)",
       "Bash(cat:*)",
-      "Bash(timeout 10s cargo run --release)"
+      "Bash(timeout 10s cargo run --release)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": []
