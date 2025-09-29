@@ -1,31 +1,41 @@
 // ============================================================================
-// IMPORTS AND MODULE DECLARATIONS
-// This section will become the module import structure for future modularization
+// MODULAR ARCHITECTURE
+// Refactored into clean module structure for better performance and maintainability
 // ============================================================================
 
-// use statements
+// Module declarations
+mod audio;
+mod beat_detection;
+mod config;
+mod graphics;
+mod input;
+mod processing;
+mod state;
+mod utils;
+
+// Core application imports
 use crate::config::config::{
     Args, AudioConfig, Config, ShaderConfig, ShaderPreset, GeometryType,
     load_or_create_config, print_startup_info,
 };
-mod audio;
-use audio::{AudioLevels, AudioState, BeatState};
-use crate::input::midi::{MidiConfig, MidiManager, MidiStateSnapshot};
-use crate::input::osc::OscConfig;
-use crate::input::osc::OscManager;
-use crate::input::osc::OscStateSnapshot;
+// use crate::graphics::{Gfx, PushConstants}; // Conflicts with local definitions
+use crate::input::midi::{MidiConfig, MidiManager};
+use crate::input::osc::{OscConfig, OscManager};
+// use crate::input::manager::InputManager; // Module not yet extracted
+use crate::audio::{AudioLevels, AudioState, BeatState};
+use crate::state::FrameState;
+
+// External crate imports
 use anyhow::{Result, anyhow};
-use ash::khr::{surface, swapchain};
-use ash::{Entry, vk};
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use midir::{Ignore, MidiInput};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::ffi::CStr;
+use ash::{Entry, vk, khr::{surface, swapchain}};
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{CString, c_char},
+    ffi::{CString, CStr, c_char},
     fs,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -37,10 +47,6 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window},
 };
-//use std::arch::x86_64::*;
-
-mod config;
-mod input;
 
 // ============================================================================
 // CORE TYPES AND CONSTANTS
@@ -53,13 +59,7 @@ const FRAME_TIME_VSYNC: Duration = Duration::from_millis(16);
 const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
 
 // state management
-#[derive(Clone, Debug)]
-pub struct FrameState {
-    pub midi: MidiStateSnapshot,
-    pub audio_levels: AudioLevels,
-    pub osc: OscStateSnapshot,
-    pub beat: BeatState,  // Add this field
-}
+// FrameState moved to state::FrameState
 
 // Geometry rendering modes
 #[derive(Debug, Clone, Copy, PartialEq)]
