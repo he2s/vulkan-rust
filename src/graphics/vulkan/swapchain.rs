@@ -3,6 +3,7 @@ use ash::{vk, khr::swapchain};
 use winit::window::Window;
 use super::context::VulkanContext;
 
+#[allow(dead_code)]
 pub struct VulkanSwapchain {
     pub loader: swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
@@ -12,6 +13,7 @@ pub struct VulkanSwapchain {
     pub views: Vec<vk::ImageView>,
 }
 
+#[allow(dead_code)]
 impl VulkanSwapchain {
     pub unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);

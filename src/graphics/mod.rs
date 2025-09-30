@@ -1,6 +1,7 @@
-use anyhow::Result;
-use winit::window::Window;
-use crate::config::config::ShaderConfig;
+// Core graphics module - contains type definitions used by main.rs
+// use anyhow::Result; // Unused
+// use winit::window::Window; // Unused
+// use crate::config::config::ShaderConfig; // Unused
 
 pub mod vulkan;
 pub mod shaders;
@@ -8,9 +9,10 @@ pub mod renderer;
 
 // pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers, VulkanPipeline, VulkanCommands, VulkanSync}; // Temporarily disabled
 // pub use renderer::Gfx; // Not yet extracted
-pub use shaders::ShaderSources;
+// pub use shaders::ShaderSources; // Unused for now
 
 // Re-export geometry types for convenience
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GeometryMode {
     Trivial,           // Simple fullscreen quad for fragment-only shaders
@@ -20,6 +22,7 @@ pub enum GeometryMode {
 }
 
 // Re-export core vertex structures
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Vertex {
@@ -27,6 +30,7 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct InstanceData {
@@ -39,6 +43,7 @@ pub struct InstanceData {
 }
 
 // Push constants structure
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PushConstants {

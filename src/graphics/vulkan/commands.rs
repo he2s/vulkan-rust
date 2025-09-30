@@ -2,12 +2,14 @@ use anyhow::Result;
 use ash::vk;
 use super::context::VulkanContext;
 
+#[allow(dead_code)]
 pub struct VulkanCommands {
     pool: vk::CommandPool,
     buffers: Vec<vk::CommandBuffer>,
     current_frame: usize,
 }
 
+#[allow(dead_code)]
 impl VulkanCommands {
     pub unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let pool_info = vk::CommandPoolCreateInfo {

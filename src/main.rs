@@ -2651,7 +2651,7 @@ impl App {
 
     fn update_window_title(&mut self) {
         // Only update title every 30 frames (~0.5 seconds at 60fps) to avoid spam
-        if self.frame_count % 30 != 0 {
+        if !self.frame_count.is_multiple_of(30) {
             return;
         }
 
@@ -2724,12 +2724,11 @@ impl ApplicationHandler for App {
                     // Update cached window size
                     self.cached_window_size = (new_size.width, new_size.height);
                     println!("Window resized to {}x{}", new_size.width, new_size.height);
-                    if let (Some(gfx), Some(window)) = (&mut self.gfx, &self.window) {
-                        if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                    if let (Some(gfx), Some(window)) = (&mut self.gfx, &self.window)
+                        && let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
                             eprintln!("Failed to recreate swapchain: {e}");
                             event_loop.exit();
                         }
-                    }
                 }
             }
 
@@ -2782,12 +2781,11 @@ impl ApplicationHandler for App {
                         match unsafe { gfx.draw(&push_constants) } {
                             Ok(true) => {
                                 // Swapchain needs recreation
-                                if let Some(window) = &self.window {
-                                    if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                                if let Some(window) = &self.window
+                                    && let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
                                         eprintln!("Failed to recreate swapchain: {e}");
                                         event_loop.exit();
                                     }
-                                }
                             }
                             Ok(false) => {
                                 // Draw succeeded normally

@@ -402,11 +402,13 @@ vec3 render(vec2 uv) {
         color = mix(color, color * vec3(1.3, 0.9, 1.2), pc.cc1 * 0.1);
         color = mix(color, pow(color, vec3(0.9, 1.1, 0.95)), pc.cc74 * 0.15);
 
-        // Material ID based effects
+        // Romantic Material ID based effects 💕
         if (tdi.y > 1.5) {
-            color *= vec3(1.5, 0.8, 2.0); // Hot material
+            color *= vec3(1.4, 0.9, 1.8); // Passionate love material (hearts glow warmly)
         } else if (tdi.y > 1.0) {
-            color *= vec3(0.8, 1.5, 1.2); // Cool material
+            color *= vec3(1.2, 0.8, 1.5); // Gentle romance material (soft and dreamy)
+        } else {
+            color *= vec3(1.1, 1.0, 1.3); // Sparkle material (magical and ethereal)
         }
 
         return color;
@@ -471,10 +473,16 @@ void main() {
     float gray = dot(c, vec3(0.299, 0.587, 0.114));
     c = mix(vec3(gray), c, 1.0 + pc.note_velocity * 0.3);
 
-    // Gentle hue shift
-    float hueShift = pc.osc_ch1 * 0.5 + pc.time * 0.02;
-    c = mix(c, c.gbr, sin(hueShift) * 0.08);
-    c = mix(c, c.brg, cos(hueShift * 1.1) * 0.05);
+    // Romantic hue shift - like seeing the world through love 💖
+    float hueShift = pc.osc_ch1 * 0.6 + pc.time * 0.03;
+    c = mix(c, c.gbr, sin(hueShift) * 0.06); // Gentle warm shift
+    c = mix(c, c.brg, cos(hueShift * 1.2) * 0.04); // Soft rose tint
+
+    // Add extra romantic warmth during high energy
+    if (pc.note_velocity > 0.6) {
+        vec3 warmth = vec3(1.1, 0.95, 1.0) * (pc.note_velocity - 0.6) * 0.3;
+        c *= warmth;
+    }
 
     // Soft vignette with gentle animation
     float vignette = 1.0 - pow(length(uvOriginal) * 0.5, 1.5);
@@ -482,24 +490,38 @@ void main() {
     vignette = st(vignette);
     c *= vignette;
 
-    // Gentle movement effect
+    // Romantic heart-beat movement effect 💓
     if (pc.note_velocity > 0.8) {
-        float movement = (pc.note_velocity - 0.8) * 0.01;
-        vec2 moveOffset = vec2(
-            sin(pc.time * 8.0) * movement,
-            cos(pc.time * 6.0) * movement
-        );
-        vec3 moveColor = render(uvOriginal + moveOffset);
-        c = mix(c, moveColor, 0.1);
+        float heartbeat = (pc.note_velocity - 0.8) * 0.012;
+        // Heart-like pulsing movement
+        vec2 heartOffset = vec2(
+            sin(pc.time * 4.0) * heartbeat * 1.2, // Slower, more heart-like
+            cos(pc.time * 4.0) * heartbeat * 0.8
+        ) * (1.0 + sin(pc.time * 12.0) * 0.3); // Double beat effect
+        vec3 heartColor = render(uvOriginal + heartOffset);
+        c = mix(c, heartColor * vec3(1.1, 0.9, 1.0), 0.15); // Warm tint
     }
 
     // Final gentle modulation
     c *= 1.0 + gentle(length(uvOriginal) + pc.time * 0.05) * 0.02 * pc.cc1;
 
-    // Soft bloom effect
-    vec3 bloom = max(c - vec3(0.8), 0.0) * 0.8;
-    c += bloom * pc.note_velocity * 0.3;
+    // Romantic dreamy bloom effect - like love is glowing ✨
+    vec3 bloom = max(c - vec3(0.7), 0.0) * 1.0;
+    bloom *= vec3(1.1, 0.8, 0.9); // Warm romantic bloom
+    c += bloom * pc.note_velocity * 0.4;
 
-    // Output with gentle saturation
-    outColor = vec4(st(c * (1.0 + pc.note_velocity * 0.2)), 1.0);
+    // Add subtle heart-shaped highlights during peaks
+    if (pc.note_velocity > 0.9) {
+        float heartGlow = (pc.note_velocity - 0.9) * 2.0;
+        vec2 heartUV = uvOriginal * 1.5;
+        float heartShape = abs(heartUV.x) + abs(heartUV.y) - 0.5;
+        float heartMask = smoothstep(0.2, 0.0, heartShape);
+        c += vec3(0.8, 0.4, 0.6) * heartMask * heartGlow * 0.3;
+    }
+
+    // Final romantic color grading
+    c = mix(c, c * vec3(1.05, 0.98, 1.02), 0.3); // Subtle warm/cool balance
+
+    // Output with passionate saturation 💕
+    outColor = vec4(st(c * (1.0 + pc.note_velocity * 0.25)), 1.0);
 }

@@ -5,6 +5,7 @@ use std::ffi::{CString, c_char};
 use winit::window::Window;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+#[allow(dead_code)]
 pub struct VulkanContext {
     pub _entry: Entry,
     pub instance: ash::Instance,
@@ -16,6 +17,7 @@ pub struct VulkanContext {
     pub queue: vk::Queue,
 }
 
+#[allow(dead_code)]
 impl VulkanContext {
     pub unsafe fn new(window: &Window, validation_layers: bool) -> Result<Self> {
         let entry = Entry::linked();

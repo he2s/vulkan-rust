@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 // Re-export beat detection for convenience (avoiding duplicate imports)
-pub use crate::beat_detection::{BeatDetectorConfig, BeatDetector};
+// pub use crate::beat_detection::{BeatDetectorConfig, BeatDetector}; // Unused for now
 
 const AUDIO_RING_CAPACITY: usize = 4096;
 const FFT_SAMPLE_SIZE: usize = 1024;
@@ -205,7 +205,7 @@ impl AudioState {
     /// Override BPM with a manual value
     pub fn set_manual_bpm(&mut self, bpm: f32) {
         // Accept a wider range for manual input since validation is done at the UI level
-        if bpm >= 20.0 && bpm <= 999.0 {
+        if (20.0..=999.0).contains(&bpm) {
             self.current_bpm = bpm;
 
             // Clear beat history to prevent interference with manual mode

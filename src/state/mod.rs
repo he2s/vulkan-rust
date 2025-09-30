@@ -35,6 +35,7 @@ impl Default for FrameState {
 }
 
 // Application state management
+#[allow(dead_code)]
 pub struct AppState {
     pub current_frame: FrameState,
     pub frame_count: u64,
@@ -43,6 +44,7 @@ pub struct AppState {
     pub delta_time: f32,
 }
 
+#[allow(dead_code)]
 impl AppState {
     pub fn new() -> Self {
         let now = std::time::Instant::now();

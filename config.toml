@@ -20,26 +20,47 @@ enabled = true
 device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 
 [shader]
-active_preset = "new"
+active_preset = "wildbeauty2"
 allow_runtime_switching = true
 
-[shader.presets.new]
+[shader.presets.wildbeauty2]
 name = "New Fullscreen"
-enabled = true
-geometry_type = "fullscreen"
-vertex = "fullscreen.vert"
-fragment = "wildbeauty3.frag"
-
-[shader.presets.new2]
-name = "New Fullscreen2"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "wildbeauty2.frag"
 
+[shader.presets.beauty]
+name = "New Fullscreen2"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "beauty.frag"
+
+[shader.presets.new3]
+name = "New Fullscreen"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "wildbeauty.frag"
+
+[shader.presets.new4]
+name = "New Fullscreen"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "crystal.frag"
+
+[shader.presets.new5]
+name = "New Fullscreen"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "beauty.frag"
+
 [shader.presets.torus]
 name = "Torus Fullscreen"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cloud3.frag"
@@ -53,7 +74,7 @@ fragment = "terrain.frag"
 
 [shader.presets.crystal]
 name = "Simple Crystal"
-enabled = true
+enabled = false
 geometry_type = "points"
 vertex = "points.vert"
 geometry = "simple.geom"
@@ -61,7 +82,7 @@ fragment = "simple_geometry.frag"
 
 [shader.presets.weirdcrystal]
 name = "Complex Crystal"
-enabled = true
+enabled = false
 geometry_type = "points"
 vertex = "points.vert"
 geometry = "example.geom"
@@ -69,7 +90,7 @@ fragment = "stars.frag"
 
 [shader.presets.stars]
 name = "Stars"
-enabled = true
+enabled = false
 geometry_type = "vertices"
 vertex = "fullscreen.vert"
 fragment = "stars.frag"

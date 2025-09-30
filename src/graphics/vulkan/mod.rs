@@ -4,16 +4,17 @@ pub mod pipeline;
 pub mod commands;
 pub mod sync;
 
-pub use context::VulkanContext;
-pub use swapchain::VulkanSwapchain;
+// Vulkan module exports - currently most are unused due to modular refactoring
+// pub use context::VulkanContext; // Unused in current structure
+// pub use swapchain::VulkanSwapchain; // Unused in current structure
 // pub use pipeline::VulkanPipeline; // Not yet extracted
-pub use commands::VulkanCommands;
-pub use sync::VulkanSync;
+// pub use commands::VulkanCommands; // Unused in current structure
+// pub use sync::VulkanSync; // Unused in current structure
 
 // Re-export common Vulkan buffers
-use anyhow::Result;
-use ash::vk;
-use super::{Vertex, InstanceData, GeometryMode};
+// use anyhow::Result; // Unused
+// use ash::vk; // Unused
+// use super::{Vertex, InstanceData, GeometryMode}; // Unused
 // Removed duplicate import
 
 /*

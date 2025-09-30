@@ -2,12 +2,14 @@ use anyhow::Result;
 use ash::vk;
 use super::context::VulkanContext;
 
+#[allow(dead_code)]
 pub struct VulkanSync {
     pub image_available: vk::Semaphore,
     pub render_finished: vk::Semaphore,
     pub in_flight: vk::Fence,
 }
 
+#[allow(dead_code)]
 impl VulkanSync {
     pub unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();

@@ -1,11 +1,13 @@
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
-use crate::config::config::{ShaderConfig, GeometryType};
+// use std::collections::HashMap; // Unused
+use crate::config::config::ShaderConfig;
+// use crate::config::config::GeometryType; // Unused
 use crate::graphics::GeometryMode;
 
 pub mod compiler;
 pub mod cache;
 
+#[allow(dead_code)]
 pub struct ShaderSources {
     pub vertex: String,
     pub geometry: Option<String>,
@@ -13,6 +15,7 @@ pub struct ShaderSources {
     pub compute: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ShaderSources {
     pub fn load_from_config(config: &ShaderConfig) -> Result<Self> {
         let preset = config.presets.get(&config.active_preset)

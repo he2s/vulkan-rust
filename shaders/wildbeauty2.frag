@@ -19,8 +19,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(location = 0) in vec2 fragUV;
-layout(location = 1) in float vertexEnergy;
-layout(location = 2) in vec3 worldPos;
+layout(location = 1) in vec2 frag_screen_pos;
 
 layout(location = 0) out vec4 outColor;
 
@@ -31,7 +30,6 @@ layout(location = 0) out vec4 outColor;
 #define MAX_STEPS 5
 #define MAX_DIST 10.0
 #define CHAOS_FACTOR 2.0
-
 
 // INSANE Helper macros
 #define min2(a, b) ((a.x < b.x) ? a : b)
@@ -120,24 +118,24 @@ float sdf_sphere(vec3 p, float r) {
 
 float sdf_box(vec3 p, vec3 b) {
     p = abs(warp(p)) - b;
-    return length(max(p, 0.0)) + min(max(p.x, max(p.y, p.z)), 0.0);
+return length(max(p, 0.0)) + min(max(p.x, max(p.y, p.z)), 0.0);
 }
 
 float sdf_octahedron(vec3 p, float s) {
     p = abs(warp(p));
-    float m = p.x + p.y + p.z - s;
-    vec3 q;
-    if (3.0 * p.x < m) q = p.xyz;
-    else if (3.0 * p.y < m) q = p.yzx;
-    else if (3.0 * p.z < m) q = p.zxy;
-    else return m * 0.57735027;
-    float k = clamp(0.5 * (q.z - q.y + s), 0.0, s);
-    return length(vec3(q.x, q.y - s + k, q.z - k));
+float m = p.x + p.y + p.z - s;
+vec3 q;
+if (3.0 * p.x < m) q = p.xyz;
+else if (3.0 * p.y < m) q = p.yzx;
+else if (3.0 * p.z < m) q = p.zxy;
+else return m * 0.57735027;
+float k = clamp(0.5 * (q.z - q.y + s), 0.0, s);
+return length(vec3(q.x, q.y - s + k, q.z - k));
 }
 
 float sdf_pyramid(vec3 p, float h) {
     p = abs(warp(p));
-    return (p.x + p.z < h) ? (h - p.y) : length(vec3(p.x, max(0.0, p.y - h), p.z));
+return (p.x + p.z < h) ? (h - p.y) : length(vec3(p.x, max(0.0, p.y - h), p.z));
 }
 
 // Global PSYCHEDELIC glow accumulator
@@ -168,6 +166,7 @@ vec2 sdf(vec3 p) {
     p *= rotZ(t * 0.3 + pc.pitch_bend * PI);
 
     // MASSIVE ring system with chaos
+    float vertexEnergy = length(frag_screen_pos) * 0.5; // Derive energy from screen position
     float ringRadius = 1.5 + vertexEnergy * 0.5 + sin(t) * 0.3;
     float ringThickness = 0.1 + energy * 0.15 + cos(t * 2.0) * 0.05;
     vec2 torusParams = vec2(ringRadius, ringThickness);
@@ -304,9 +303,9 @@ vec3 render(vec2 uv) {
     // INSANE Camera setup with MAXIMUM audio influence
     float camDist = 2.0 + sin(pc.time * 2.0) * 1.0 - pc.cc1 * 1.5 + pc.note_velocity * 2.0;
     vec3 ro = vec3(
-        sin(pc.time * 0.5 + pc.osc_ch1 * PI) * 0.5,
-        cos(pc.time * 0.7 + pc.osc_ch2 * PI) * 0.3,
-        -camDist
+    sin(pc.time * 0.5 + pc.osc_ch1 * PI) * 0.5,
+    cos(pc.time * 0.7 + pc.osc_ch2 * PI) * 0.3,
+    -camDist
     );
 
     // CHAOTIC automatic camera movement
@@ -365,63 +364,63 @@ vec3 render(vec2 uv) {
 
         float specular = 0.0;
         specular += specIntensity * pow(pos(sin(spec1 * 25.0 - pc.time * 2.0)) + 0.1, 16.0);
-        specular += specIntensity * 0.7 * pow(spec2 + 0.2, 12.0);
-        specular += specIntensity * 0.5 * pow(spec3 + 0.3, 8.0);
+specular += specIntensity * 0.7 * pow(spec2 + 0.2, 12.0);
+specular += specIntensity * 0.5 * pow(spec3 + 0.3, 8.0);
 
-        // Crazy animated specular
-        specular *= 1.0 + sin(pc.time * 10.0 + length(p) * 5.0) * 0.3;
+// Crazy animated specular
+specular *= 1.0 + sin(pc.time * 10.0 + length(p) * 5.0) * 0.3;
 
-        // CHAOTIC lighting
-        float shadow1 = pow(st(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 2.0);
-        float shadow2 = pow(st(dot(n, normalize(vec3(1.0, 0.5, 0.2))) * 0.7 + 0.8), 2.5);
-        float shadow3 = st(dot(n, normalize(vec3(-0.5, -1.0, 0.3))) * 0.3 + 0.9);
+// CHAOTIC lighting
+float shadow1 = pow(st(dot(n, vec3(0.0, 1.0, 0.0)) * 0.5 + 1.2), 2.0);
+float shadow2 = pow(st(dot(n, normalize(vec3(1.0, 0.5, 0.2))) * 0.7 + 0.8), 2.5);
+float shadow3 = st(dot(n, normalize(vec3(-0.5, -1.0, 0.3))) * 0.3 + 0.9);
 
-        float shadow = (shadow1 + shadow2 * 0.6 + shadow3 * 0.4) / 2.0;
+float shadow = (shadow1 + shadow2 * 0.6 + shadow3 * 0.4) / 2.0;
 
-        // INSANE color mixing
-        vec3 color = iridescence * shadow;
-        color += vec3(specular * 2.0, specular * 1.5, specular * 2.5);
-        color += glow * 1.5;
+// INSANE color mixing
+vec3 color = iridescence * shadow;
+color += vec3(specular * 2.0, specular * 1.5, specular * 2.5);
+color += glow * 1.5;
 
-        // EXTREME energy effects
-        if(pc.note_velocity > 0.3) {
-            vec3 energyFlash = vec3(
-                1.0 + pc.note_velocity * 2.0,
-                0.5 + pc.note_velocity * 1.5,
-                0.8 + pc.note_velocity * 3.0
-            ) * (pc.note_velocity - 0.3) * 0.8;
-            color += energyFlash;
-        }
+// EXTREME energy effects
+if(pc.note_velocity > 0.3) {
+    vec3 energyFlash = vec3(
+    1.0 + pc.note_velocity * 2.0,
+    0.5 + pc.note_velocity * 1.5,
+    0.8 + pc.note_velocity * 3.0
+    ) * (pc.note_velocity - 0.3) * 0.8;
+    color += energyFlash;
+}
 
-        // Oscillator effects
-        color += vec3(pc.osc_ch1 * 0.3, pc.osc_ch2 * 0.4, (pc.osc_ch1 + pc.osc_ch2) * 0.2);
+// Oscillator effects
+color += vec3(pc.osc_ch1 * 0.3, pc.osc_ch2 * 0.4, (pc.osc_ch1 + pc.osc_ch2) * 0.2);
 
-        // Pitch bend chromatic effects
-        color *= 1.0 + vec3(pc.pitch_bend * 0.5, 0.0, -pc.pitch_bend * 0.3);
+// Pitch bend chromatic effects
+color *= 1.0 + vec3(pc.pitch_bend * 0.5, 0.0, -pc.pitch_bend * 0.3);
 
-        // CC effects
-        color = mix(color, color * vec3(2.0, 0.5, 1.5), pc.cc1 * 0.3);
-        color = mix(color, pow(color, vec3(0.7, 1.3, 0.8)), pc.cc74 * 0.4);
+// CC effects
+color = mix(color, color * vec3(2.0, 0.5, 1.5), pc.cc1 * 0.3);
+color = mix(color, pow(color, vec3(0.7, 1.3, 0.8)), pc.cc74 * 0.4);
 
-        // Material ID based effects
-        if (tdi.y > 1.5) {
-            color *= vec3(1.5, 0.8, 2.0); // Hot material
-        } else if (tdi.y > 1.0) {
-            color *= vec3(0.8, 1.5, 1.2); // Cool material
-        }
+// Material ID based effects
+if (tdi.y > 1.5) {
+    color *= vec3(1.5, 0.8, 2.0); // Hot material
+} else if (tdi.y > 1.0) {
+    color *= vec3(0.8, 1.5, 1.2); // Cool material
+}
 
-        return color;
-    }
+return color;
+}
 
-    // PSYCHEDELIC Background with multiple glow layers
-    vec3 bg = glow * 2.0;
-    bg += rainbow_palette(length(uv) * 0.3 + pc.time * 0.2) * 0.1 * pc.note_velocity;
-    bg += fire_palette(crazy(length(uv) + pc.time)) * 0.05 * pc.cc74;
+// PSYCHEDELIC Background with multiple glow layers
+vec3 bg = glow * 2.0;
+bg += rainbow_palette(length(uv) * 0.3 + pc.time * 0.2) * 0.1 * pc.note_velocity;
+bg += fire_palette(crazy(length(uv) + pc.time)) * 0.05 * pc.cc74;
 
-    // Background animation
-    bg += vec3(0.05, 0.02, 0.08) * (1.0 + sin(pc.time + length(uv) * 5.0) * 0.5);
+// Background animation
+bg += vec3(0.05, 0.02, 0.08) * (1.0 + sin(pc.time + length(uv) * 5.0) * 0.5);
 
-    return bg;
+return bg;
 }
 
 void main() {
@@ -437,13 +436,12 @@ void main() {
     float r = length(uv);
     uv *= 1.0 + distortion * r * r;
 
-    // Simple anti-aliasing via smoothstep on edges
-    vec2 pixelSize = 2.0 / resolution;
-    vec3 c = render(uv);
-
-    // Basic edge smoothing
-    c = mix(c, render(uv + vec2(pixelSize.x, 0.0)), 0.1);
-    c = mix(c, render(uv + vec2(0.0, pixelSize.y)), 0.1);
+    // Chromatic aberration
+    float aberration = 0.01 + pc.cc74 * 0.02;
+    vec3 c = vec3(0.0);
+    c.r = render(uv + vec2(aberration, 0.0)).r;
+    c.g = render(uv).g;
+    c.b = render(uv - vec2(aberration, 0.0)).b;
 
     // INSANE post-processing effects
 
@@ -488,8 +486,8 @@ void main() {
     if (pc.note_velocity > 0.8) {
         float shake = (pc.note_velocity - 0.8) * 0.05;
         vec2 shakeOffset = vec2(
-            sin(pc.time * 50.0) * shake,
-            cos(pc.time * 37.0) * shake
+        sin(pc.time * 50.0) * shake,
+        cos(pc.time * 37.0) * shake
         );
         vec3 shakeColor = render(uvOriginal + shakeOffset);
         c = mix(c, shakeColor, 0.3);
@@ -501,17 +499,6 @@ void main() {
     // Bloom effect
     vec3 bloom = max(c - vec3(1.0), 0.0) * 2.0;
     c += bloom * pc.note_velocity;
-
-    // Simple blur at the end
-    vec2 blurSize = pixelSize * (0.5 + pc.cc1 * 1.5);
-    vec3 blur = c;
-    blur += render(uv + vec2(blurSize.x, 0.0));
-    blur += render(uv - vec2(blurSize.x, 0.0));
-    blur += render(uv + vec2(0.0, blurSize.y));
-    blur += render(uv - vec2(0.0, blurSize.y));
-    blur *= 0.2;
-
-    c = mix(c, blur, 0.3 + pc.note_velocity * 0.4);
 
     // Output with CHAOS saturation
     outColor = vec4(st(c * (1.0 + pc.note_velocity * 0.5)), 1.0);

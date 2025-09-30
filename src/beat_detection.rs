@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::f32::consts::PI;
 
 /// Configuration for beat detection
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct BeatDetectorConfig {
     /// Window size for onset detection (in samples)
@@ -36,6 +37,7 @@ impl Default for BeatDetectorConfig {
 }
 
 /// Represents the current beat state
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct BeatState {
     /// Detected BPM
@@ -66,6 +68,7 @@ impl Default for BeatState {
 }
 
 /// Main beat detection system
+#[allow(dead_code)]
 pub struct BeatDetector {
     config: BeatDetectorConfig,
 
@@ -99,6 +102,7 @@ pub struct BeatDetector {
     previous_spectrum: Vec<f32>,
 }
 
+#[allow(dead_code)]
 impl BeatDetector {
     pub fn new(config: BeatDetectorConfig) -> Self {
         let fft_size = config.onset_window_size;
@@ -144,7 +148,7 @@ impl BeatDetector {
 
         // Process window much less frequently - every 512 samples instead of onset_window_size/4
         if self.onset_buffer.len() == self.config.onset_window_size
-            && self.samples_processed % 512 == 0 {
+            && self.samples_processed.is_multiple_of(512) {
             self.process_window();
         }
 
@@ -267,7 +271,7 @@ impl BeatDetector {
         self.current_beat_in_bar = (self.current_beat_in_bar + 1) % self.beats_per_bar;
 
         // Detect time signature periodically
-        if self.total_beats % 16 == 0 {
+        if self.total_beats.is_multiple_of(16) {
             self.detect_time_signature();
         }
     }
@@ -306,7 +310,7 @@ impl BeatDetector {
 
         // Look for repeating patterns in beat strengths
         // This is simplified - real implementation would use autocorrelation
-        let mut pattern_scores = vec![0.0f32; 8];
+        let mut pattern_scores = [0.0f32; 8];
 
         for bar_length in 2..=8 {
             let mut score = 0.0;
@@ -381,7 +385,7 @@ impl BeatDetector {
 
     /// Override BPM with a manual value
     pub fn set_manual_bpm(&mut self, bpm: f32) {
-        if bpm >= 40.0 && bpm <= 300.0 {
+        if (40.0..=300.0).contains(&bpm) {
             self.current_bpm = bpm;
             self.beat_interval = 60.0 / bpm;
 
