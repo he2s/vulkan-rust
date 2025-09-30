@@ -118,19 +118,19 @@ float sdf_sphere(vec3 p, float r) {
 
 float sdf_box(vec3 p, vec3 b) {
     p = abs(warp(p)) - b;
-return length(max(p, 0.0)) + min(max(p.x, max(p.y, p.z)), 0.0);
+    return length(max(p, 0.0)) + min(max(p.x, max(p.y, p.z)), 0.0);
 }
 
 float sdf_octahedron(vec3 p, float s) {
     p = abs(warp(p));
-float m = p.x + p.y + p.z - s;
-vec3 q;
-if (3.0 * p.x < m) q = p.xyz;
-else if (3.0 * p.y < m) q = p.yzx;
-else if (3.0 * p.z < m) q = p.zxy;
-else return m * 0.57735027;
-float k = clamp(0.5 * (q.z - q.y + s), 0.0, s);
-return length(vec3(q.x, q.y - s + k, q.z - k));
+    float m = p.x + p.y + p.z - s;
+    vec3 q;
+    if (3.0 * p.x < m) q = p.xyz;
+    else if (3.0 * p.y < m) q = p.yzx;
+    else if (3.0 * p.z < m) q = p.zxy;
+    else return m * 0.57735027;
+    float k = clamp(0.5 * (q.z - q.y + s), 0.0, s);
+    return length(vec3(q.x, q.y - s + k, q.z - k));
 }
 
 float sdf_pyramid(vec3 p, float h) {
@@ -437,11 +437,12 @@ void main() {
     uv *= 1.0 + distortion * r * r;
 
     // Chromatic aberration
-    float aberration = 0.01 + pc.cc74 * 0.02;
+    //float aberration = 0.01 + pc.cc74 * 0.02;
     vec3 c = vec3(0.0);
-    c.r = render(uv + vec2(aberration, 0.0)).r;
-    c.g = render(uv).g;
-    c.b = render(uv - vec2(aberration, 0.0)).b;
+    c = render(uv);
+    //c.r = render(uv + vec2(aberration, 0.0)).r;
+    //c.g = render(uv).g;
+    //c.b = render(uv - vec2(aberration, 0.0)).b;
 
     // INSANE post-processing effects
 
