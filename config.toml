@@ -20,15 +20,50 @@ enabled = true
 device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 
 [shader]
-active_preset = "wildbeauty2"
+active_preset = "new2"
 allow_runtime_switching = true
 
-[shader.presets.wildbeauty2]
-name = "New Fullscreen"
+[shader.presets.new2]
+name = "New Fullscreen8"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "wildbeauty2.frag"
+fragment = "new2.frag"
+
+[shader.presets.new13]
+name = "New Fullscreen13"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new3.frag"
+
+[shader.presets.new15]
+name = "New Fullscreen15"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new5.frag"
+
+[shader.presets.new17]
+name = "New Fullscreen17"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new7.frag"
+
+[shader.presets.new19]
+name = "New Fullscreen19"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new8.frag"
+
+[shader.presets.wildbeauty2]
+name = "New Fullscreen78"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new3.frag"
 
 [shader.presets.beauty]
 name = "New Fullscreen2"
@@ -39,31 +74,31 @@ fragment = "beauty.frag"
 
 [shader.presets.new3]
 name = "New Fullscreen"
-enabled = false
+enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "wildbeauty.frag"
 
 [shader.presets.new4]
 name = "New Fullscreen"
-enabled = false
+enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "crystal.frag"
+fragment = "cloud.frag"
 
 [shader.presets.new5]
 name = "New Fullscreen"
-enabled = false
+enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "beauty.frag"
+fragment = "cloud2.frag"
 
 [shader.presets.torus]
 name = "Torus Fullscreen"
-enabled = false
+enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "cloud3.frag"
+fragment = "stars.frag"
 
 [shader.presets.terrain]
 name = "Terrain"
