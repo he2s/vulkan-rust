@@ -2644,7 +2644,7 @@ impl App {
 
     fn print_controls(&self) {
         println!("Controls:");
-        println!("  H     - Toggle ImGui menu");
+        println!("  H     - Show info display (prints to console)");
         println!("  F11   - Toggle fullscreen");
         println!("  F5    - Reload and recompile shaders");
         println!("  ESC   - Exit (or exit fullscreen)");
