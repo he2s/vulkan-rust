@@ -632,7 +632,12 @@ impl Gfx {
     /// # Safety
     /// This function is unsafe because it calls numerous unsafe Vulkan functions for command buffer recording and submission.
     /// The caller must ensure that Vulkan resources are properly initialized and that synchronization is handled correctly.
-    pub unsafe fn draw(&mut self, push_constants: &PushConstants) -> Result<bool> {
+    pub unsafe fn draw(
+        &mut self,
+        push_constants: &PushConstants,
+        egui_primitives: Option<&Vec<egui::ClippedPrimitive>>,
+        egui_overlay: Option<&mut crate::graphics::egui_overlay::EguiOverlay>,
+    ) -> Result<bool> {
         unsafe { self.context
             .device
             .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)? };
@@ -644,7 +649,7 @@ impl Gfx {
         }
 
         let cmd_buffer = self.commands.get_current_buffer();
-        unsafe { self.record_command_buffer(cmd_buffer, image_index, push_constants)? };
+        unsafe { self.record_command_buffer(cmd_buffer, image_index, push_constants, egui_primitives, egui_overlay)? };
 
         unsafe { self.submit_commands(cmd_buffer)? };
 
@@ -669,6 +674,8 @@ impl Gfx {
         cmd_buffer: vk::CommandBuffer,
         image_index: u32,
         push_constants: &PushConstants,
+        egui_primitives: Option<&Vec<egui::ClippedPrimitive>>,
+        egui_overlay: Option<&mut crate::graphics::egui_overlay::EguiOverlay>,
     ) -> Result<()> {
         unsafe {
             self.context
@@ -910,6 +917,23 @@ impl Gfx {
             }
             }
         }
+
+        // Render egui overlay if primitives exist
+        if let (Some(primitives), Some(overlay)) = (egui_primitives, egui_overlay) {
+            if !primitives.is_empty() {
+                unsafe {
+                    overlay.render(
+                        &self.context.instance,
+                        &self.context.device,
+                        self.context.physical_device,
+                        cmd_buffer,
+                        self.swapchain.extent,
+                        primitives,
+                    )?;
+                }
+            }
+        }
+
         unsafe {
             self.context.device.cmd_end_render_pass(cmd_buffer);
         }
@@ -2401,9 +2425,8 @@ impl InputManager {
 pub struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
-    overlay: Option<crate::graphics::overlay::OverlayRenderer>,
+    overlay: Option<crate::graphics::egui_overlay::EguiOverlay>,
     start_time: Option<Instant>,
-    last_frame_time: Option<Instant>,
     mouse_pos: (f64, f64),
     mouse_pressed: bool,
     input_manager: InputManager,
@@ -2451,7 +2474,6 @@ impl App {
             gfx: None,
             overlay: None,
             start_time: None,
-            last_frame_time: None,
             mouse_pos: (0.0, 0.0),
             mouse_pressed: false,
             input_manager: InputManager::new(),
@@ -2644,7 +2666,7 @@ impl App {
 
     fn print_controls(&self) {
         println!("Controls:");
-        println!("  H     - Show info display (prints to console)");
+        println!("  H     - Toggle preset overlay");
         println!("  F11   - Toggle fullscreen");
         println!("  F5    - Reload and recompile shaders");
         println!("  ESC   - Exit (or exit fullscreen)");
@@ -2672,6 +2694,17 @@ impl App {
             };
 
             window.set_title(&title);
+        }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Clean up egui before Vulkan context is destroyed
+        if let (Some(overlay), Some(gfx)) = (&mut self.overlay, &self.gfx) {
+            unsafe {
+                overlay.destroy(&gfx.context.device);
+            }
         }
     }
 }
@@ -2704,14 +2737,27 @@ impl ApplicationHandler for App {
                 .expect("Failed to initialize Vulkan")
         };
 
-        let overlay = crate::graphics::overlay::OverlayRenderer::new()
-            .expect("Failed to initialize overlay");
+        let mut overlay = crate::graphics::egui_overlay::EguiOverlay::new(&window)
+            .expect("Failed to initialize egui overlay");
+
+        // Initialize egui Vulkan resources
+        unsafe {
+            overlay
+                .init_vulkan(
+                    &gfx.context.instance,
+                    &gfx.context.device,
+                    gfx.context.physical_device,
+                    gfx.pipeline.render_pass,
+                    gfx.commands.pool,
+                    gfx.context.queue,
+                )
+                .expect("Failed to initialize egui Vulkan resources");
+        }
 
         self.window = Some(window);
         self.gfx = Some(gfx);
         self.overlay = Some(overlay);
         self.start_time = Some(Instant::now());
-        self.last_frame_time = Some(Instant::now());
 
         self.input_manager.setup_midi(&self.config.midi);
         self.input_manager.setup_audio(&self.config.audio);
@@ -2726,6 +2772,18 @@ impl ApplicationHandler for App {
         _: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        // Let egui handle events first
+        let egui_consumed = if let (Some(window), Some(overlay)) = (&self.window, &mut self.overlay) {
+            overlay.handle_event(window, &event)
+        } else {
+            false
+        };
+
+        // If egui consumed the event, don't process it further
+        if egui_consumed {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -2764,7 +2822,7 @@ impl ApplicationHandler for App {
                 PhysicalKey::Code(KeyCode::Space) => self.handle_tap_tempo(),
                 PhysicalKey::Code(KeyCode::KeyH) => {
                     if let Some(overlay) = &mut self.overlay {
-                        overlay.toggle_menu();
+                        overlay.toggle_overlay();
                     }
                 }
                 _ => {}
@@ -2792,20 +2850,17 @@ impl ApplicationHandler for App {
                     let push_constants =
                         self.get_push_constants(elapsed, width.max(1), height.max(1));
 
-                    // Prepare overlay frame
-                    if let Some(overlay) = &mut self.overlay {
-                        let now = Instant::now();
-                        let delta = self.last_frame_time
-                            .map(|t| now.duration_since(t).as_secs_f32())
-                            .unwrap_or(0.016);
-                        self.last_frame_time = Some(now);
-
-                        overlay.prepare_frame(delta, [width as f32, height as f32]);
-                        overlay.build_ui(&push_constants);
-                    }
+                    // Update egui overlay and get primitives
+                    let egui_primitives = if let (Some(window), Some(overlay)) = (&self.window, &mut self.overlay) {
+                        let current_preset = &self.shader_presets[self.current_shader_index];
+                        let (_output, primitives) = overlay.run_ui(window, current_preset);
+                        Some(primitives)
+                    } else {
+                        None
+                    };
 
                     if let Some(gfx) = &mut self.gfx {
-                        match unsafe { gfx.draw(&push_constants) } {
+                        match unsafe { gfx.draw(&push_constants, egui_primitives.as_ref(), self.overlay.as_mut()) } {
                             Ok(true) => {
                                 // Swapchain needs recreation
                                 if let Some(window) = &self.window

@@ -6,7 +6,7 @@
 pub mod vulkan;
 pub mod shaders;
 pub mod renderer;
-pub mod overlay;
+pub mod egui_overlay;
 
 // pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers, VulkanPipeline, VulkanCommands, VulkanSync}; // Temporarily disabled
 // pub use renderer::Gfx; // Not yet extracted

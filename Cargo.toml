@@ -18,6 +18,8 @@ toml = "0.8"  # New
 cpal = "0.15"
 rustfft = "6"
 libc = "0.2.175"
+egui = "0.29"
+egui-winit = "0.29"
 
 [profile.release]
 opt-level = 3

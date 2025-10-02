@@ -11,7 +11,8 @@
       "Bash(git checkout:*)",
       "Bash(cat:*)",
       "Bash(timeout 10s cargo run --release)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(ls \"C:\\Users\\henni\\vulkan-rust\\shaders\"\" | grep -i egui || echo \"No egui shaders found \")"
     ],
     "deny": [],
     "ask": []
