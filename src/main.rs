@@ -2772,9 +2772,13 @@ impl ApplicationHandler for App {
         _: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        // Let egui handle events first
+        // Let egui handle events only when overlay is visible
         let egui_consumed = if let (Some(window), Some(overlay)) = (&self.window, &mut self.overlay) {
-            overlay.handle_event(window, &event)
+            if overlay.show_overlay {
+                overlay.handle_event(window, &event)
+            } else {
+                false
+            }
         } else {
             false
         };
