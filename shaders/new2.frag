@@ -24,154 +24,20 @@ layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// Quality settings
-#ifndef QUALITY_LEVEL
-#define QUALITY_LEVEL 2
-#endif
+// Constants
+#define PI 3.141592653589793238
+#define TAU (2.0 * PI)
+
+// Helper macros
+#define sat(x) clamp(x, 0.0, 1.0)
 
 // Global variables
 float iTime;
 vec2 iResolution;
-vec2 iMouse;
-vec2 bsMo = vec2(0);
 float audioEnergy = 0.0;
 float audioMod = 0.0;
 float audioBright = 0.0;
 float audioBend = 0.0;
-
-// Constants
-#define PI 3.14159265359
-#define TAU 6.28318530718
-
-// Smooth step functions
-float smootherstep(float edge0, float edge1, float x) {
-    x = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
-    return x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
-}
-
-// Create wave pattern
-float wavePattern(vec2 p, float freq, float phase, float amp) {
-    return sin(p.y * freq + phase) * amp;
-}
-
-// Create the interference pattern
-float interferencePattern(vec2 uv) {
-    vec2 p = uv;
-
-    // Base frequency modulated by audio
-    float baseFreq = 8.0 + audioEnergy * 4.0;
-
-    // Multiple wave sources for interference
-    float pattern = 0.0;
-
-    // Primary horizontal waves
-    float wave1 = sin(p.y * baseFreq + iTime * 2.0) * 0.5;
-    float wave2 = sin(p.y * baseFreq * 1.1 + iTime * 2.2 + PI * 0.5) * 0.5;
-
-    // Create interference in the center column
-    float centerDist = abs(p.x);
-    float centerInfluence = 1.0 - smoothstep(0.0, 0.3, centerDist);
-
-    // Vertical modulation for the center distortion
-    float vertMod = sin(p.y * baseFreq * 0.5 + iTime * 1.5 + audioMod * PI);
-    vertMod *= centerInfluence;
-
-    // Audio-reactive wave displacement
-    float displacement = 0.0;
-    displacement += sin(p.y * baseFreq * 2.0 + iTime * 3.0) * audioEnergy * 0.1;
-    displacement += cos(p.y * baseFreq * 0.7 - iTime * 1.8) * audioMod * 0.1;
-
-    // OSC inputs create additional modulation
-    displacement += pc.osc_ch1 * sin(p.y * baseFreq * 1.5 + iTime) * 0.05;
-    displacement += pc.osc_ch2 * cos(p.y * baseFreq * 0.8 - iTime * 1.2) * 0.05;
-
-    // Combine waves with displacement
-    p.x += displacement;
-    p.x += vertMod * 0.2;
-
-    // Main pattern with audio-reactive frequency
-    pattern = sin(p.y * baseFreq + p.x * baseFreq * 0.3);
-
-    // Add interference from pitch bend
-    pattern += sin(p.y * baseFreq * 1.2 + audioBend * PI) * 0.3;
-
-    // Vertex energy creates local distortions
-    pattern += sin(p.y * baseFreq * 3.0 + vertexEnergy * TAU) * vertexEnergy * 0.2;
-
-    // Note count creates harmonic variations
-    float harmonic = float(pc.note_count % 8u + 1u);
-    pattern += sin(p.y * baseFreq * harmonic * 0.25 + iTime) * 0.2;
-
-    // Create sharp transitions
-    float sharpness = 3.0 + audioBright * 2.0;
-    pattern = sin(pattern * sharpness);
-
-    return pattern;
-}
-
-// Create concentric wave effect from edges
-float edgeWaves(vec2 uv) {
-    vec2 p = uv;
-
-    // Distance from edges
-    float edgeDist = min(
-    min(abs(p.x - 1.0), abs(p.x + 1.0)),
-    min(abs(p.y - 1.0), abs(p.y + 1.0))
-    );
-
-    // Create waves emanating from edges
-    float waveFreq = 15.0 + audioEnergy * 10.0;
-    float waves = sin(edgeDist * waveFreq - iTime * 3.0);
-
-    // Modulate with audio
-    waves *= 1.0 + audioMod * 0.5;
-
-    return waves;
-}
-
-// Main color calculation
-vec3 getColor(vec2 uv) {
-    // Get interference pattern
-    float pattern = interferencePattern(uv);
-
-    // Get edge waves
-    float edges = edgeWaves(uv);
-
-    // Combine patterns
-    float combined = mix(pattern, edges, 0.3 * audioBright);
-
-    // Create threshold for black/white/orange pattern
-    float threshold1 = -0.3 + audioEnergy * 0.2;
-    float threshold2 = 0.3 - audioEnergy * 0.2;
-
-    vec3 col;
-
-    // Three-color system based on the original image
-    if (combined < threshold1) {
-        // Black
-        col = vec3(0.0);
-    } else if (combined > threshold2) {
-        // Orange (with audio modulation)
-        col = vec3(1.0, 0.4, 0.1);
-        col = mix(col, vec3(1.0, 0.3, 0.0), audioMod);
-
-        // Note count shifts hue
-        float hueShift = float(pc.note_count % 6u) / 6.0;
-        col = mix(col, vec3(1.0, 0.5, 0.2), hueShift);
-    } else {
-        // White
-        col = vec3(1.0);
-
-        // Slight tint based on brightness
-        col = mix(col, vec3(0.95, 0.95, 1.0), audioBright * 0.2);
-    }
-
-    // Add subtle gradient based on position
-    float gradient = length(uv) * 0.1;
-    col *= 1.0 - gradient * (1.0 - audioEnergy * 0.5);
-
-    return col;
-}
 
 // Rotation matrix
 mat2 rot(float a) {
@@ -180,84 +46,283 @@ mat2 rot(float a) {
     return mat2(c, -s, s, c);
 }
 
+// Psychedelic color palette
+vec3 palette(float t) {
+    // Multiple color cycles for psychedelic effect
+    vec3 a = vec3(0.5, 0.5, 0.5);
+    vec3 b = vec3(0.5, 0.5, 0.5);
+    vec3 c = vec3(1.0, 1.0, 1.0);
+    vec3 d = vec3(0.0, 0.33, 0.67);
+
+    // Audio modulates the palette
+    d.x += audioEnergy * 0.3;
+    d.y += audioMod * 0.3;
+    d.z += audioBend * 0.2;
+
+    vec3 col = a + b * cos(TAU * (c * t + d));
+
+    // Add note count variation
+    float noteHue = float(pc.note_count % 8u) * 0.125;
+    col = mix(col, col.gbr, noteHue * 0.3);
+
+    return col;
+}
+
+// Enhanced Mandelbrot calculation with audio reactivity
+vec3 mandelbrot(vec2 c) {
+    vec2 z = vec2(0.0);
+    float iterations = 0.0;
+
+    // Audio-reactive max iterations
+    float maxIter = mix(50.0, 200.0, audioBright);
+
+    // Audio affects escape radius
+    float escapeRadius = 2.0 + audioEnergy * 2.0;
+    float escapeSq = escapeRadius * escapeRadius;
+
+    // Smooth iteration counting
+    float smoothIter = 0.0;
+
+    for(float i = 0.0; i < 200.0; i++) {
+        if(i >= maxIter) break;
+
+        // Standard Mandelbrot: z = z^2 + c
+        // But add audio-reactive perturbations
+        float zx = z.x * z.x - z.y * z.y;
+        float zy = 2.0 * z.x * z.y;
+
+        // Add chaos from vertex energy
+        zx += sin(iTime * 0.5 + vertexEnergy * TAU) * audioEnergy * 0.05;
+        zy += cos(iTime * 0.7 + vertexEnergy * TAU) * audioEnergy * 0.05;
+
+        z = vec2(zx, zy) + c;
+
+        // OSC creates additional distortion
+        z += vec2(pc.osc_ch1, pc.osc_ch2) * 0.01 * audioMod;
+
+        float len2 = dot(z, z);
+
+        if(len2 > escapeSq) {
+            // Smooth iteration count for better coloring
+            smoothIter = i + 1.0 - log(log(len2)) / log(2.0);
+            break;
+        }
+
+        iterations = i;
+    }
+
+    if(iterations >= maxIter - 1.0) {
+        // Inside the set - psychedelic interior
+        float interior = length(z) / escapeRadius;
+        interior = fract(interior * 10.0 + iTime * 0.5);
+
+        vec3 col = palette(interior + audioMod);
+        col *= 0.3 + audioEnergy * 0.7;
+
+        return col;
+    }
+
+    // Outside the set - colorful bands
+    float t = smoothIter / maxIter;
+
+    // Create multiple color bands
+    t = fract(t * 10.0 + iTime * 0.3);
+
+    // Pitch bend affects color rotation
+    t += audioBend * 0.5;
+
+    vec3 col = palette(t);
+
+    // Add distance-based shading for depth
+    float dist = length(z);
+    float shade = smoothstep(0.0, escapeRadius, dist);
+    col *= 0.5 + shade * 0.5;
+
+    return col;
+}
+
+// Mandelbrot with orbit traps for extra psychedelia
+vec3 mandelbrotOrbitTraps(vec2 c) {
+    vec2 z = vec2(0.0);
+    float minDist = 1e10;
+    vec2 trap = vec2(0.0);
+
+    float maxIter = mix(50.0, 150.0, audioBright);
+    float escapeRadius = 2.0 + audioEnergy * 2.0;
+    float escapeSq = escapeRadius * escapeRadius;
+
+    // Orbit trap shapes (audio-reactive)
+    vec2 trapCenter = vec2(0.0, 0.0);
+    trapCenter += vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
+
+    for(float i = 0.0; i < 150.0; i++) {
+        if(i >= maxIter) break;
+
+        // Mandelbrot iteration
+        float zx = z.x * z.x - z.y * z.y + c.x;
+        float zy = 2.0 * z.x * z.y + c.y;
+        z = vec2(zx, zy);
+
+        // Track closest approach to trap
+        float dist = length(z - trapCenter);
+        if(dist < minDist) {
+            minDist = dist;
+            trap = z;
+        }
+
+        if(dot(z, z) > escapeSq) break;
+    }
+
+    // Color based on orbit trap distance
+    float t = sat(minDist * 2.0);
+    t = pow(t, 0.5);
+    t = fract(t * 5.0 + iTime * 0.2);
+
+    vec3 col = palette(t + audioBend * 0.3);
+
+    // Add angle-based coloring
+    float angle = atan(trap.y, trap.x) / PI;
+    angle = fract(angle + iTime * 0.1);
+    vec3 angleCol = palette(angle);
+
+    col = mix(col, angleCol, 0.5);
+
+    return col;
+}
+
 void main() {
     // Setup resolution and time
     iResolution = (pc.render_w > 0u && pc.render_h > 0u)
-    ? vec2(pc.render_w, pc.render_h)
-    : vec2(800.0, 600.0);
+        ? vec2(pc.render_w, pc.render_h)
+        : vec2(800.0, 600.0);
 
     // Cache audio parameters
-    audioEnergy = clamp(pc.note_velocity, 0.0, 1.0);
-    audioMod = clamp(pc.cc1, 0.0, 1.0);
-    audioBright = clamp(pc.cc74, 0.0, 1.0);
+    audioEnergy = sat(pc.note_velocity);
+    audioMod = sat(pc.cc1);
+    audioBright = sat(pc.cc74);
     audioBend = clamp(pc.pitch_bend, -1.0, 1.0);
 
-    // Time with audio modulation
-    float timeScale = mix(0.8, 2.0, audioMod);
+    // Time with INSANE audio modulation
+    float timeScale = 0.3 + audioMod * 2.0;
     iTime = pc.time * timeScale;
 
-    // Mouse setup
-    iMouse = vec2(float(pc.mouse_x), float(pc.mouse_y));
-
-    // Interactive control
-    if (pc.mouse_pressed > 0u) {
-        bsMo = (iMouse - 0.5 * iResolution.xy) / iResolution.y;
-    } else {
-        bsMo = vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
-    }
-
     // UV coordinates
-    vec2 q = fragUV;
     vec2 uv = (fragUV - 0.5) * 2.0;
     uv.x *= iResolution.x / iResolution.y;
 
-    // Scale based on energy (zoom effect)
-    float zoom = 1.0 + audioEnergy * 0.3;
+    // CHAOTIC automatic camera movement
+    float camOrbitSpeed = 0.1 + audioEnergy * 0.3;
+    vec2 camOffset = vec2(
+        sin(iTime * camOrbitSpeed) * 0.5,
+        cos(iTime * camOrbitSpeed * 0.7) * 0.3
+    );
+
+    // Mouse/OSC camera override
+    vec2 mouseNorm = vec2(float(pc.mouse_x), float(pc.mouse_y)) / iResolution;
+    if(pc.mouse_pressed > 0u) {
+        camOffset = (mouseNorm - 0.5) * 4.0;
+    } else if(abs(pc.osc_ch1) + abs(pc.osc_ch2) > 0.01) {
+        camOffset += vec2(pc.osc_ch1, pc.osc_ch2) * 2.0;
+    }
+
+    // Audio-reactive zoom with pulsing
+    float zoom = 0.5 + audioEnergy * 1.5;
+    zoom *= 1.0 + sin(iTime * 5.0) * audioEnergy * 0.2;
+    zoom = mix(zoom, 2.0, audioBright * 0.5);
+
+    // Zoom into interesting regions automatically
+    float autoZoom = exp(-iTime * 0.1) * 2.0 + 0.5;
+    zoom *= autoZoom;
+
+    // Apply zoom
     uv /= zoom;
 
-    // Add rotation based on pitch bend
-    uv *= rot(audioBend * 0.3);
+    // Rotation based on pitch bend and time
+    float rotation = audioBend * PI;
+    rotation += iTime * 0.1 * audioMod;
+    uv = rot(rotation) * uv;
 
-    // Add mouse/OSC offset
-    uv += bsMo * 0.5;
+    // UV distortion for extra psychedelia
+    float distortStrength = audioEnergy * 0.1;
+    uv += sin(uv.yx * 3.0 + iTime) * distortStrength;
 
-    // Get base color
-    vec3 col = getColor(uv);
+    // Position in Mandelbrot space
+    vec2 c = uv;
 
-    // Add shimmer effect based on brightness
-    if (audioBright > 0.5) {
-        float shimmer = sin(iTime * 20.0 + uv.y * 50.0) * 0.05;
-        shimmer *= (audioBright - 0.5) * 2.0;
-        col += vec3(shimmer);
+    // Explore interesting regions
+    c += vec2(-0.5, 0.0); // Center on interesting area
+    c += camOffset;
+
+    // Choose rendering mode based on note count
+    vec3 col;
+    if(pc.note_count % 3u == 0u) {
+        col = mandelbrot(c);
+    } else {
+        col = mandelbrotOrbitTraps(c);
     }
 
-    // Create pulsing effect with energy
-    col *= 0.9 + audioEnergy * 0.1 * sin(iTime * 10.0);
+    // EXTREME energy effects
+    if(audioEnergy > 0.5) {
+        // Energy flashes
+        float flash = pow(audioEnergy - 0.5, 2.0) * 4.0;
+        flash *= (1.0 + sin(iTime * 20.0) * 0.5);
+        col += vec3(flash);
 
-    // Add strobe effect for high energy
-    if (audioEnergy > 0.7) {
-        float strobe = step(0.5, fract(iTime * 8.0));
-        col = mix(col, 1.0 - col, strobe * (audioEnergy - 0.7) * 2.0);
+        // Kaleidoscope effect at high energy
+        if(audioEnergy > 0.7) {
+            vec2 uvOrig = (fragUV - 0.5) * 2.0;
+            uvOrig.x *= iResolution.x / iResolution.y;
+            float angle = atan(uvOrig.y, uvOrig.x);
+            float segments = 6.0 + floor(audioEnergy * 6.0);
+            angle = mod(angle, TAU / segments) * segments;
+            vec2 kaleidoUV = vec2(cos(angle), sin(angle)) * length(uvOrig);
+            kaleidoUV /= zoom;
+            kaleidoUV = rot(rotation) * kaleidoUV;
+            vec2 kaleidoC = kaleidoUV + vec2(-0.5, 0.0) + camOffset;
+            vec3 kaleidoCol = mandelbrot(kaleidoC);
+            col = mix(col, kaleidoCol, (audioEnergy - 0.7) * 0.7);
+        }
     }
 
-    // Vignette
-    float vignette = 1.0 - length(uv * 0.5) * 0.3;
-    vignette = pow(vignette, 0.5 - audioEnergy * 0.2);
+    // Pitch bend chromatic effects
+    col *= 1.0 + vec3(audioBend * 0.3, 0.0, -audioBend * 0.3);
+
+    // CC effects
+    col = mix(col, col * vec3(1.5, 0.8, 1.2), audioMod * 0.3);
+
+    // Color grading CHAOS
+    vec3 powerCurve = vec3(0.8, 0.9, 1.0);
+    powerCurve = mix(powerCurve, vec3(0.6, 0.7, 0.8), audioBright * 0.5);
+    col = pow(col, powerCurve + sin(iTime) * 0.1);
+
+    // Contrast and saturation
+    float contrast = 1.2 + audioBright * 0.5;
+    col = (col - 0.5) * contrast + 0.5;
+
+    // Saturation based on energy
+    float gray = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(gray), col, 1.0 + audioEnergy * 1.0);
+
+    // Hue shift
+    float hueShift = pc.osc_ch1 * TAU + iTime * 0.1;
+    col = mix(col, col.gbr, sin(hueShift) * 0.3);
+    col = mix(col, col.brg, cos(hueShift * 1.2) * 0.2);
+
+    // EXTREME vignette with animation
+    vec2 uvOrig = (fragUV - 0.5) * 2.0;
+    uvOrig.x *= iResolution.x / iResolution.y;
+    float vignette = 1.0 - pow(length(uvOrig) * 0.5, 2.0);
+    vignette += sin(iTime * 3.0 + length(uvOrig) * 10.0) * 0.1 * audioEnergy;
+    vignette = sat(vignette);
     col *= vignette;
 
-    // Add slight chromatic aberration for movement
-    if (audioMod > 0.3) {
-        vec2 caOffset = vec2(0.002, 0.0) * (audioMod - 0.3);
-        vec3 colR = getColor(uv + caOffset);
-        vec3 colB = getColor(uv - caOffset);
-        col.r = colR.r;
-        col.b = colB.b;
-    }
+    // Bloom effect
+    vec3 bloom = max(col - vec3(1.0), 0.0) * 2.0;
+    col += bloom * audioEnergy;
 
-    // Contrast adjustment based on brightness
-    float contrast = 1.0 + audioBright * 0.5;
-    col = pow(col, vec3(1.0 / contrast));
+    // Vertex energy adds local glow
+    col *= 1.0 + vertexEnergy * 0.3;
 
-    // Final color output
-    outColor = vec4(col, 1.0);
+    // Output with CHAOS saturation
+    outColor = vec4(sat(col * (1.0 + audioEnergy * 0.3)), 1.0);
 }

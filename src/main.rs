@@ -2401,7 +2401,9 @@ impl InputManager {
 pub struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
+    overlay: Option<crate::graphics::overlay::OverlayRenderer>,
     start_time: Option<Instant>,
+    last_frame_time: Option<Instant>,
     mouse_pos: (f64, f64),
     mouse_pressed: bool,
     input_manager: InputManager,
@@ -2447,7 +2449,9 @@ impl App {
         Self {
             window: None,
             gfx: None,
+            overlay: None,
             start_time: None,
+            last_frame_time: None,
             mouse_pos: (0.0, 0.0),
             mouse_pressed: false,
             input_manager: InputManager::new(),
@@ -2640,6 +2644,7 @@ impl App {
 
     fn print_controls(&self) {
         println!("Controls:");
+        println!("  H     - Toggle ImGui menu");
         println!("  F11   - Toggle fullscreen");
         println!("  F5    - Reload and recompile shaders");
         println!("  ESC   - Exit (or exit fullscreen)");
@@ -2699,9 +2704,14 @@ impl ApplicationHandler for App {
                 .expect("Failed to initialize Vulkan")
         };
 
+        let overlay = crate::graphics::overlay::OverlayRenderer::new()
+            .expect("Failed to initialize overlay");
+
         self.window = Some(window);
         self.gfx = Some(gfx);
+        self.overlay = Some(overlay);
         self.start_time = Some(Instant::now());
+        self.last_frame_time = Some(Instant::now());
 
         self.input_manager.setup_midi(&self.config.midi);
         self.input_manager.setup_audio(&self.config.audio);
@@ -2752,6 +2762,11 @@ impl ApplicationHandler for App {
                 PhysicalKey::Code(KeyCode::Tab) => self.cycle_shader(),
                 PhysicalKey::Code(KeyCode::F5) => self.reload_shaders(),
                 PhysicalKey::Code(KeyCode::Space) => self.handle_tap_tempo(),
+                PhysicalKey::Code(KeyCode::KeyH) => {
+                    if let Some(overlay) = &mut self.overlay {
+                        overlay.toggle_menu();
+                    }
+                }
                 _ => {}
             },
 
@@ -2776,6 +2791,18 @@ impl ApplicationHandler for App {
                     let (width, height) = self.cached_window_size;
                     let push_constants =
                         self.get_push_constants(elapsed, width.max(1), height.max(1));
+
+                    // Prepare overlay frame
+                    if let Some(overlay) = &mut self.overlay {
+                        let now = Instant::now();
+                        let delta = self.last_frame_time
+                            .map(|t| now.duration_since(t).as_secs_f32())
+                            .unwrap_or(0.016);
+                        self.last_frame_time = Some(now);
+
+                        overlay.prepare_frame(delta, [width as f32, height as f32]);
+                        overlay.build_ui(&push_constants);
+                    }
 
                     if let Some(gfx) = &mut self.gfx {
                         match unsafe { gfx.draw(&push_constants) } {

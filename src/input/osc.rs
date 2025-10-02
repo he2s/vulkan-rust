@@ -53,10 +53,10 @@ fn default_osc_address() -> String {
     "0.0.0.0".to_string()
 }
 fn default_channel1_path() -> String {
-    "/1/fader1".to_string()
+    "/3/xy/x".to_string()
 }
 fn default_channel2_path() -> String {
-    "/1/fader2".to_string()
+    "/3/xy/y".to_string()
 }
 const fn default_smoothing() -> f32 {
     0.1

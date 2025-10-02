@@ -20,40 +20,47 @@ enabled = true
 device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 
 [shader]
-active_preset = "new2"
+active_preset = "new13"
 allow_runtime_switching = true
 
 [shader.presets.new2]
 name = "New Fullscreen8"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "new2.frag"
+fragment = "wildbeauty3.frag"
+
+[shader.presets.new1]
+name = "New Fullscreen81"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new10.frag"
 
 [shader.presets.new13]
 name = "New Fullscreen13"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "new3.frag"
+fragment = "new2.frag"
 
 [shader.presets.new15]
 name = "New Fullscreen15"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "new5.frag"
 
 [shader.presets.new17]
 name = "New Fullscreen17"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "new7.frag"
 
 [shader.presets.new19]
 name = "New Fullscreen19"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "new8.frag"
@@ -67,35 +74,35 @@ fragment = "new3.frag"
 
 [shader.presets.beauty]
 name = "New Fullscreen2"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "beauty.frag"
 
 [shader.presets.new3]
 name = "New Fullscreen"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "wildbeauty.frag"
 
 [shader.presets.new4]
 name = "New Fullscreen"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cloud.frag"
 
 [shader.presets.new5]
 name = "New Fullscreen"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cloud2.frag"
 
 [shader.presets.torus]
 name = "Torus Fullscreen"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "stars.frag"
