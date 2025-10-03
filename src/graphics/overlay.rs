@@ -15,7 +15,7 @@ impl OverlayRenderer {
         // No-op for console output
     }
 
-    pub fn build_ui(&mut self, push_constants: &crate::PushConstants) {
+    pub fn build_ui(&mut self, push_constants: &crate::graphics::PushConstants) {
         if self.show_menu {
             // Print info to console
             println!("\n========================================");

@@ -4,20 +4,20 @@ pub mod pipeline;
 pub mod commands;
 pub mod sync;
 
-// Vulkan module exports - currently most are unused due to modular refactoring
-// pub use context::VulkanContext; // Unused in current structure
-// pub use swapchain::VulkanSwapchain; // Unused in current structure
-// pub use pipeline::VulkanPipeline; // Not yet extracted
-// pub use commands::VulkanCommands; // Unused in current structure
-// pub use sync::VulkanSync; // Unused in current structure
+// Re-export Vulkan types for easy access
+pub use context::VulkanContext;
+pub use swapchain::VulkanSwapchain;
+pub use commands::VulkanCommands;
+pub use sync::VulkanSync;
+
+// VulkanBuffers is defined in this file below
 
 // Re-export common Vulkan buffers
-// use anyhow::Result; // Unused
-// use ash::vk; // Unused
-// use super::{Vertex, InstanceData, GeometryMode}; // Unused
-// Removed duplicate import
+use anyhow::Result;
+use ash::vk;
+use super::{Vertex, InstanceData};
 
-/*
+// VulkanBuffers implementation
 pub struct VulkanBuffers {
     pub vertex_buffer: vk::Buffer,
     pub vertex_memory: vk::DeviceMemory,
@@ -37,7 +37,7 @@ impl VulkanBuffers {
         ];
 
         let (vertex_buffer, vertex_memory) = unsafe {
-            Self::create_vertex_buffer(&context.device, context.physical_device, &vertex_data)?
+            Self::create_vertex_buffer(&context.device, &context.instance, context.physical_device, &vertex_data)?
         };
 
         let instance_count = 100000;
@@ -56,12 +56,12 @@ impl VulkanBuffers {
             .collect();
 
         let (instance_buffer, instance_memory) = unsafe {
-            Self::create_instance_buffer(&context.device, context.physical_device, &instance_data)?
+            Self::create_instance_buffer(&context.device, &context.instance, context.physical_device, &instance_data)?
         };
 
         let storage_buffer_size = 4 * 1024 * 1024; // 4MB for generated points
         let (storage_buffer, storage_memory) = unsafe {
-            Self::create_storage_buffer(&context.device, context.physical_device, storage_buffer_size)?
+            Self::create_storage_buffer(&context.device, &context.instance, context.physical_device, storage_buffer_size)?
         };
 
         Ok(Self {
@@ -76,6 +76,7 @@ impl VulkanBuffers {
 
     unsafe fn create_vertex_buffer(
         device: &ash::Device,
+        instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         data: &[Vertex],
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
@@ -91,7 +92,7 @@ impl VulkanBuffers {
         let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
         let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let memory_type = Self::find_memory_type(
-            device,
+            instance,
             physical_device,
             memory_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -117,6 +118,7 @@ impl VulkanBuffers {
 
     unsafe fn create_instance_buffer(
         device: &ash::Device,
+        instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         data: &[InstanceData],
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
@@ -132,7 +134,7 @@ impl VulkanBuffers {
         let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
         let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let memory_type = Self::find_memory_type(
-            device,
+            instance,
             physical_device,
             memory_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -158,6 +160,7 @@ impl VulkanBuffers {
 
     unsafe fn create_storage_buffer(
         device: &ash::Device,
+        instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         size: vk::DeviceSize,
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
@@ -171,7 +174,7 @@ impl VulkanBuffers {
         let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
         let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let memory_type = Self::find_memory_type(
-            device,
+            instance,
             physical_device,
             memory_requirements.memory_type_bits,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -213,4 +216,3 @@ impl Drop for VulkanBuffers {
         // For now, we'll rely on the device cleanup
     }
 }
-*/
