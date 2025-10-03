@@ -234,8 +234,8 @@ impl AudioState {
 
         let take = FFT_SAMPLE_SIZE.min(self.ring.len());
 
-        // Reuse windowing buffer to avoid allocation
-        self.windowing_buffer.clear();
+        // Reuse windowing buffer to avoid allocation - truncate(0) is faster than clear()
+        self.windowing_buffer.truncate(0);
         self.windowing_buffer
             .extend(self.ring.iter().rev().take(take));
         self.windowing_buffer.reverse();
@@ -296,13 +296,14 @@ impl AudioState {
 
         Self::apply_hann_window(&mut self.windowing_buffer);
 
-        let fft = self
-            .fft_cache
-            .entry(fft_len)
-            .or_insert_with(|| self.fft_planner.plan_fft_forward(fft_len))
-            .clone();
+        let fft = Arc::clone(
+            self.fft_cache
+                .entry(fft_len)
+                .or_insert_with(|| self.fft_planner.plan_fft_forward(fft_len))
+        );
 
-        self.processing_buffer.clear();
+        // truncate(0) is faster than clear() as it preserves capacity
+        self.processing_buffer.truncate(0);
         self.processing_buffer.extend(
             self.windowing_buffer
                 .iter()
@@ -366,7 +367,8 @@ impl AudioState {
 
     #[allow(dead_code)]
     pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
-        self.mono_conversion_buffer.clear();
+        // truncate(0) is faster than clear() as it preserves capacity
+        self.mono_conversion_buffer.truncate(0);
         self.mono_conversion_buffer
             .reserve(data.len() / channels + 1);
 

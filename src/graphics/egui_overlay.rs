@@ -105,11 +105,14 @@ impl EguiOverlay {
         command_pool: vk::CommandPool,
         queue: vk::Queue,
     ) -> Result<()> {
-        self.create_descriptor_set_layout(device)?;
-        self.create_pipeline(device, render_pass)?;
-        self.create_descriptor_pool(device)?;
+        unsafe {
+            self.create_descriptor_set_layout(device)?;
+            self.create_pipeline(device, render_pass)?;
+            self.create_descriptor_pool(device)?;
+        }
 
         // Store for deferred font upload (after first egui frame)
+        // Clone instance handle - this is a lightweight operation that just clones the handle struct
         self.instance = Some(instance.clone());
         self.physical_device = Some(physical_device);
         self.command_pool = Some(command_pool);
@@ -130,7 +133,7 @@ impl EguiOverlay {
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .bindings(&bindings);
 
-        let layout = device.create_descriptor_set_layout(&layout_info, None)?;
+        let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None)? };
         self.descriptor_set_layout = Some(layout);
         Ok(())
     }
@@ -140,10 +143,10 @@ impl EguiOverlay {
         let vert_code = Self::compile_shader("shaders/egui.vert", shaderc::ShaderKind::Vertex)?;
         let frag_code = Self::compile_shader("shaders/egui.frag", shaderc::ShaderKind::Fragment)?;
 
-        let vert_module = Self::create_shader_module(device, &vert_code)?;
-        let frag_module = Self::create_shader_module(device, &frag_code)?;
+        let vert_module = unsafe { Self::create_shader_module(device, &vert_code)? };
+        let frag_module = unsafe { Self::create_shader_module(device, &frag_code)? };
 
-        let entry_point = std::ffi::CString::new("main").unwrap();
+        let entry_point = std::ffi::CString::new("main")?;
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -224,11 +227,14 @@ impl EguiOverlay {
             size: std::mem::size_of::<PushConstants>() as u32,
         };
 
+        let descriptor_set_layout = self.descriptor_set_layout
+            .ok_or_else(|| anyhow!("Descriptor set layout not created"))?;
+
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(std::slice::from_ref(self.descriptor_set_layout.as_ref().unwrap()))
+            .set_layouts(std::slice::from_ref(&descriptor_set_layout))
             .push_constant_ranges(std::slice::from_ref(&push_constant_range));
 
-        let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
         self.pipeline_layout = Some(pipeline_layout);
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -248,14 +254,18 @@ impl EguiOverlay {
             .render_pass(render_pass)
             .subpass(0);
 
-        let pipelines = device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-            .map_err(|e| anyhow!("Failed to create pipeline: {:?}", e.1))?;
+        let pipelines = unsafe {
+            device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|e| anyhow!("Failed to create pipeline: {:?}", e.1))?
+        };
 
         self.pipeline = Some(pipelines[0]);
 
-        device.destroy_shader_module(vert_module, None);
-        device.destroy_shader_module(frag_module, None);
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
+        }
 
         Ok(())
     }
@@ -440,9 +450,14 @@ impl EguiOverlay {
         let sampler = device.create_sampler(&sampler_info, None)?;
 
         // Create descriptor set
-        let layouts = [self.descriptor_set_layout.unwrap()];
+        let descriptor_set_layout = self.descriptor_set_layout
+            .ok_or_else(|| anyhow!("Descriptor set layout not created"))?;
+        let descriptor_pool = self.descriptor_pool
+            .ok_or_else(|| anyhow!("Descriptor pool not created"))?;
+
+        let layouts = [descriptor_set_layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.descriptor_pool.unwrap())
+            .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
 
         let descriptor_sets = device.allocate_descriptor_sets(&alloc_info)?;
@@ -495,17 +510,23 @@ impl EguiOverlay {
 
         // Upload font texture on first render (after egui has run once)
         if !self.font_texture_uploaded {
-            let inst = self.instance.clone().unwrap();
-            let phys_dev = self.physical_device.unwrap();
-            let pool = self.command_pool.unwrap();
-            let q = self.queue.unwrap();
+            let inst = self.instance.clone()
+                .ok_or_else(|| anyhow!("Instance not initialized"))?;
+            let phys_dev = self.physical_device
+                .ok_or_else(|| anyhow!("Physical device not initialized"))?;
+            let pool = self.command_pool
+                .ok_or_else(|| anyhow!("Command pool not initialized"))?;
+            let q = self.queue
+                .ok_or_else(|| anyhow!("Queue not initialized"))?;
 
             self.upload_font_texture(&inst, device, phys_dev, pool, q)?;
             self.font_texture_uploaded = true;
         }
 
         // Bind pipeline
-        device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline.unwrap());
+        let pipeline = self.pipeline
+            .ok_or_else(|| anyhow!("Pipeline not created"))?;
+        device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
         // Set viewport
         let viewport = vk::Viewport {
@@ -523,9 +544,12 @@ impl EguiOverlay {
             screen_size: [extent.width as f32, extent.height as f32],
         };
 
+        let pipeline_layout = self.pipeline_layout
+            .ok_or_else(|| anyhow!("Pipeline layout not created"))?;
+
         device.cmd_push_constants(
             cmd_buffer,
-            self.pipeline_layout.unwrap(),
+            pipeline_layout,
             vk::ShaderStageFlags::VERTEX,
             0,
             std::slice::from_raw_parts(
@@ -569,15 +593,20 @@ impl EguiOverlay {
             self.update_index_buffer(instance, device, physical_device, &mesh.indices)?;
 
             // Bind buffers
-            device.cmd_bind_vertex_buffers(cmd_buffer, 0, &[self.vertex_buffer.unwrap()], &[0]);
-            device.cmd_bind_index_buffer(cmd_buffer, self.index_buffer.unwrap(), 0, vk::IndexType::UINT32);
+            let vertex_buffer = self.vertex_buffer
+                .ok_or_else(|| anyhow!("Vertex buffer not created"))?;
+            let index_buffer = self.index_buffer
+                .ok_or_else(|| anyhow!("Index buffer not created"))?;
+
+            device.cmd_bind_vertex_buffers(cmd_buffer, 0, &[vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(cmd_buffer, index_buffer, 0, vk::IndexType::UINT32);
 
             // Bind descriptor set for texture
             if let Some(texture) = self.textures.get(&mesh.texture_id) {
                 device.cmd_bind_descriptor_sets(
                     cmd_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout.unwrap(),
+                    pipeline_layout,
                     0,
                     &[texture.descriptor_set],
                     &[],
@@ -631,9 +660,12 @@ impl EguiOverlay {
             self.vertex_buffer_size = buffer_size;
         }
 
-        let ptr = device.map_memory(self.vertex_buffer_memory.unwrap(), 0, buffer_size, vk::MemoryMapFlags::empty())?;
+        let vertex_buffer_memory = self.vertex_buffer_memory
+            .ok_or_else(|| anyhow!("Vertex buffer memory not allocated"))?;
+
+        let ptr = device.map_memory(vertex_buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())?;
         std::ptr::copy_nonoverlapping(converted_vertices.as_ptr(), ptr as *mut EguiVertex, converted_vertices.len());
-        device.unmap_memory(self.vertex_buffer_memory.unwrap());
+        device.unmap_memory(vertex_buffer_memory);
 
         Ok(())
     }
@@ -669,9 +701,12 @@ impl EguiOverlay {
             self.index_buffer_size = buffer_size;
         }
 
-        let ptr = device.map_memory(self.index_buffer_memory.unwrap(), 0, buffer_size, vk::MemoryMapFlags::empty())?;
+        let index_buffer_memory = self.index_buffer_memory
+            .ok_or_else(|| anyhow!("Index buffer memory not allocated"))?;
+
+        let ptr = device.map_memory(index_buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())?;
         std::ptr::copy_nonoverlapping(indices.as_ptr(), ptr as *mut u32, indices.len());
-        device.unmap_memory(self.index_buffer_memory.unwrap());
+        device.unmap_memory(index_buffer_memory);
 
         Ok(())
     }

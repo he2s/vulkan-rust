@@ -1005,9 +1005,9 @@ impl VulkanContext {
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let required_extensions =
-            ash_window::enumerate_required_extensions(display_handle)?.to_vec();
+            ash_window::enumerate_required_extensions(display_handle)?;
 
-        let instance = unsafe { Self::create_instance(&entry, &required_extensions, validation_layers)? };
+        let instance = unsafe { Self::create_instance(&entry, required_extensions, validation_layers)? };
         let surface =
             unsafe { ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)? };
         let surface_loader = surface::Instance::new(&entry, &instance);

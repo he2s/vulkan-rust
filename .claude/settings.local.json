@@ -1,18 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo check:*)",
-      "Bash(cargo run:*)",
-      "Bash(timeout 5s cargo run --release)",
-      "Bash(timeout 3s cargo run --release)",
-      "Bash(timeout 2s cargo run --release)",
-      "Bash(cargo:*)",
-      "Bash(grep:*)",
-      "Bash(git checkout:*)",
-      "Bash(cat:*)",
-      "Bash(timeout 10s cargo run --release)",
-      "Bash(timeout:*)",
-      "Bash(ls \"C:\\Users\\henni\\vulkan-rust\\shaders\"\" | grep -i egui || echo \"No egui shaders found \")"
+      "Bash(cargo build:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
