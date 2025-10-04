@@ -7,6 +7,7 @@ pub mod overlay;
 
 // Re-export Vulkan types for convenience
 pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers, VulkanCommands, VulkanSync};
+pub use shaders::ShaderSources;
 
 // Geometry types
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,6 +65,19 @@ pub struct PushConstants {
     pub bass_level: f32,
     pub mid_level: f32,
     pub high_level: f32,
+}
+
+// Point data structure matching the compute shader
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PointData {
+    pub position: [f32; 2],
+    pub size: f32,
+    pub intensity: f32,
+    pub color: [f32; 4],
+    pub rotation: f32,
+    pub point_type: u32,
+    pub velocity: [f32; 2],
 }
 
 impl Default for PushConstants {

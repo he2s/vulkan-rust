@@ -1,42 +1,89 @@
 use anyhow::{Result, anyhow};
-// use std::collections::HashMap; // Unused
-use crate::config::config::ShaderConfig;
-// use crate::config::config::GeometryType; // Unused
+use std::fs;
+use crate::config::config::{ShaderConfig, ShaderPreset, GeometryType};
 use crate::graphics::GeometryMode;
 
 pub mod compiler;
 pub mod cache;
 
-#[allow(dead_code)]
 pub struct ShaderSources {
     pub vertex: String,
     pub geometry: Option<String>,
     pub fragment: String,
-    pub compute: Option<String>,
 }
 
-#[allow(dead_code)]
+fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
+    std::fs::read_to_string(p).ok()
+}
+
 impl ShaderSources {
-    pub fn load_from_config(config: &ShaderConfig) -> Result<Self> {
-        let preset = config.presets.get(&config.active_preset)
-            .ok_or_else(|| anyhow!("Shader preset '{}' not found in config", config.active_preset))?;
+    pub fn determine_geometry_mode(&self) -> GeometryMode {
+        // Check for geometry shader first
+        if self.geometry.is_some() {
+            return GeometryMode::GeometryShader;
+        }
 
-        let vertex = std::fs::read_to_string(format!("shaders/{}", preset.vertex))
-            .map_err(|e| anyhow!("Failed to read vertex shader '{}': {}", preset.vertex, e))?;
+        // Check vertex shader content to determine mode
+        if self.vertex.contains("fullscreen.vert") ||
+           self.vertex.contains("in_position") &&
+           !self.vertex.contains("instance_") &&
+           !self.vertex.contains("gl_InstanceIndex") {
+            GeometryMode::Trivial
+        } else if self.vertex.contains("instance_") ||
+                  self.vertex.contains("gl_InstanceIndex") {
+            GeometryMode::InstancedTriangles
+        } else if self.vertex.contains("compute") ||
+                  self.fragment.contains("compute") {
+            GeometryMode::ComputeGenerated
+        } else {
+            GeometryMode::Trivial
+        }
+    }
 
-        let fragment = std::fs::read_to_string(format!("shaders/{}", preset.fragment))
-            .map_err(|e| anyhow!("Failed to read fragment shader '{}': {}", preset.fragment, e))?;
+    pub fn geometry_mode_from_preset(preset: &ShaderPreset) -> GeometryMode {
+        match preset.geometry_type {
+            GeometryType::Fullscreen => GeometryMode::Trivial,
+            GeometryType::Points if preset.geometry.is_some() => GeometryMode::GeometryShader,
+            GeometryType::Points => GeometryMode::Trivial,
+            GeometryType::Vertices => GeometryMode::Trivial,
+            GeometryType::Compute => GeometryMode::ComputeGenerated,
+        }
+    }
 
-        let geometry = preset.geometry.as_ref()
-            .map(|path| {
-                std::fs::read_to_string(format!("shaders/{}", path))
-                    .map_err(|e| anyhow!("Failed to read geometry shader '{}': {}", path, e))
-            })
-            .transpose()?;
+    pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
+        println!("Loading preset: {}", preset.name);
 
-        let compute = if let Some(ref compute_path) = preset.compute {
-            Some(std::fs::read_to_string(format!("shaders/{}", compute_path))
-                .map_err(|e| anyhow!("Failed to read compute shader '{}': {}", compute_path, e))?)
+        // Try to load from external directory first if set
+        if let Ok(dir) = std::env::var("SHADER_PRESET_DIR") {
+            println!("Loading from external directory: {}", dir);
+            let shader_dir = std::path::Path::new(&dir).join("shaders");
+
+            let vpath = shader_dir.join(&preset.vertex);
+            let fpath = shader_dir.join(&preset.fragment);
+            let gpath = preset.geometry.as_ref().map(|g| shader_dir.join(g));
+
+            if let (Some(vs), Some(fs)) = (try_read_to_string(&vpath), try_read_to_string(&fpath)) {
+                let geometry = if let Some(gpath) = gpath {
+                    try_read_to_string(&gpath)
+                } else {
+                    None
+                };
+
+                return Ok(Self {
+                    vertex: vs,
+                    geometry,
+                    fragment: fs,
+                });
+            }
+        }
+
+        // Fall back to embedded shaders
+        println!("Loading embedded shaders for preset: {}", preset.name);
+
+        let vertex = Self::load_embedded_shader(&preset.vertex)?;
+        let fragment = Self::load_embedded_shader(&preset.fragment)?;
+        let geometry = if let Some(ref geom_path) = preset.geometry {
+            Some(Self::load_embedded_shader(geom_path)?)
         } else {
             None
         };
@@ -45,19 +92,43 @@ impl ShaderSources {
             vertex,
             geometry,
             fragment,
-            compute,
         })
     }
 
-    pub fn determine_geometry_mode(&self) -> GeometryMode {
-        if self.compute.is_some() {
-            GeometryMode::ComputeGenerated
-        } else if self.geometry.is_some() {
-            GeometryMode::GeometryShader
-        } else if self.vertex.contains("gl_InstanceIndex") {
-            GeometryMode::InstancedTriangles
-        } else {
-            GeometryMode::Trivial
+    fn load_embedded_shader(filename: &str) -> Result<String> {
+        use std::path::Path;
+
+        let shader_path = Path::new("shaders").join(filename);
+        match fs::read_to_string(&shader_path) {
+            Ok(content) => Ok(content),
+            Err(e) => Err(anyhow!("Failed to load shader '{}': {}", shader_path.display(), e)),
         }
+    }
+
+    pub fn load_from_files(vertex_path: &str, fragment_path: &str) -> Result<Self> {
+        Ok(Self {
+            vertex: fs::read_to_string(vertex_path)?,
+            geometry: None,
+            fragment: fs::read_to_string(fragment_path)?,
+        })
+    }
+
+    pub fn load_from_files_with_geometry(vertex_path: &str, geometry_path: &str, fragment_path: &str) -> Result<Self> {
+        Ok(Self {
+            vertex: fs::read_to_string(vertex_path)?,
+            geometry: Some(fs::read_to_string(geometry_path)?),
+            fragment: fs::read_to_string(fragment_path)?,
+        })
+    }
+
+    pub fn load_from_config(config: &ShaderConfig) -> Result<Self> {
+        let preset = config.presets.get(&config.active_preset)
+            .ok_or_else(|| anyhow!("Shader preset '{}' not found in config", config.active_preset))?;
+
+        if !preset.enabled {
+            return Err(anyhow!("Shader preset '{}' is disabled", config.active_preset));
+        }
+
+        Self::load_preset(preset)
     }
 }
