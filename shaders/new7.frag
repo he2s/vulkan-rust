@@ -101,16 +101,16 @@ vec3 pal(in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d) {
 }
 
 vec3 spectrum(float n) {
-    // Audio affects spectrum shift
-    vec3 shift = vec3(0.0, 0.33, 0.67);
-    shift.x += audioMod * 0.2;
-    shift.y += audioEnergy * 0.1;
+    // Soft pastel palette: lavender, soft blue, gentle pink
+    vec3 shift = vec3(0.1, 0.4, 0.7);
+    shift.x += audioMod * 0.05;
+    shift.y += audioEnergy * 0.03;
 
-    // Note count creates color variations
+    // Gentle note count variations
     float noteShift = float(pc.note_count % 8u) * 0.125;
-    shift += vec3(noteShift * 0.1);
+    shift += vec3(noteShift * 0.03);
 
-    return pal(n, vec3(0.5), vec3(0.5), vec3(1.0), shift);
+    return pal(n, vec3(0.6, 0.65, 0.7), vec3(0.3, 0.35, 0.4), vec3(1.0), shift);
 }
 
 // Triple sine function
@@ -120,51 +120,51 @@ float sin3(vec3 v) {
 
 // Main distance field with audio reactivity
 vec2 map(vec3 p) {
-    // Audio affects scale
-    float scl = 1.3 - audioEnergy * 0.2;
+    // Gentle scale variation
+    float scl = 1.2 - audioEnergy * 0.05;
     p /= scl;
 
-    // Audio-reactive rotation
-    float rotAmount = 0.2 + audioBend * 0.3;
+    // Slow, gentle rotation
+    float rotAmount = 0.15 + audioBend * 0.1;
     pR(p.yz, rotAmount * PI);
-    pR(p.xz, (-0.25 + audioMod * 0.2) * PI);
+    pR(p.xz, (-0.2 + audioMod * 0.05) * PI);
 
     float flr = p.y + 0.5;
 
-    // Primary wave distortion with audio
-    float waveSpeed = mix(1.0, 3.0, audioMod);
-    vec3 waveOffset = time * vec3(1, 3, 2) * PI * 2. * waveSpeed + vec3(0, .5, 3);
+    // Gentle wave distortion
+    float waveSpeed = mix(0.5, 1.2, audioMod);
+    vec3 waveOffset = time * vec3(0.8, 1.5, 1.2) * PI * waveSpeed + vec3(0, .5, 3);
 
-    // Vertex energy adds local distortion
-    p += sin(p * 8. + waveOffset) * (0.1 + vertexEnergy * 0.05);
+    // Subtle vertex energy
+    p += sin(p * 6. + waveOffset) * (0.04 + vertexEnergy * 0.02);
 
-    // OSC inputs create additional displacement
-    p.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.05;
+    // Minimal OSC displacement
+    p.xy += vec2(pc.osc_ch1, pc.osc_ch2) * 0.02;
 
     vec3 p2 = p;
 
-    // Fine detail with energy modulation
-    p += sin3(p * 80.) * (0.0015 + audioEnergy * 0.001);
+    // Subtle fine detail
+    p += sin3(p * 60.) * (0.001 + audioEnergy * 0.0003);
 
-    // Main prism shape
-    float boxSize = 0.5 - 0.01 - audioEnergy * 0.05;
+    // Main prism shape - stable size
+    float boxSize = 0.48 - audioEnergy * 0.02;
     float b = fBox(p, vec3(boxSize)) - 0.01;
 
-    // Edge details
+    // Soft edge details
     float d3 = 1e12;
-    float rr = 0.0025 + audioBright * 0.002;
+    float rr = 0.002 + audioBright * 0.001;
     p2 = abs(p2);
     p2 = vec3(vmin(p2.xz), p2.y, vmax(p2.xz));
     d3 = min(d3, sdLine(p2.xzy - vec3(.5, .7, .5), 0.2, rr));
     d3 = max(d3, -vmax(p * vec3(1, -1, -1)));
 
-    // Secondary wave with audio modulation
-    float secondWaveAmp = 0.1 + audioEnergy * 0.05;
-    p += sin(p * 6. + time * vec3(-3, 2, 1) * PI * 2. + vec3(.1, .5, .6)) * secondWaveAmp;
+    // Gentle secondary wave
+    float secondWaveAmp = 0.05 + audioEnergy * 0.02;
+    p += sin(p * 4. + time * vec3(-1.5, 1.2, 0.8) * PI + vec3(.1, .5, .6)) * secondWaveAmp;
 
-    // Cut-out pattern affected by brightness
-    float cutoutSize = 0.0125 + audioBright * 0.01;
-    b = smax(b, -vmin(abs(p)) + cutoutSize, 0.01);
+    // Soft cut-out pattern
+    float cutoutSize = 0.015 + audioBright * 0.005;
+    b = smax(b, -vmin(abs(p)) + cutoutSize, 0.015);
 
     float d2 = b + 0.1;
     float d = max(b, -d2 + 0.01);
@@ -193,17 +193,18 @@ vec2 map(vec3 p) {
 
 // Background color with audio modulation
 vec3 getBGColor() {
-    vec3 baseCol = vec3(0.86, 0.8, 1.0);
+    // Soft lavender-blue base
+    vec3 baseCol = vec3(0.75, 0.8, 0.95);
 
-    // Energy darkens background
-    baseCol *= 1.0 - audioEnergy * 0.3;
+    // Gentle energy variation
+    baseCol *= 1.0 - audioEnergy * 0.1;
 
-    // Mod wheel shifts hue
-    baseCol = mix(baseCol, vec3(0.7, 0.85, 1.0), audioMod);
+    // Soft hue shifts
+    baseCol = mix(baseCol, vec3(0.8, 0.85, 1.0), audioMod * 0.3);
 
-    // Note count adds color variation
+    // Subtle note count variation
     float noteHue = float(pc.note_count % 6u) / 6.0;
-    baseCol = mix(baseCol, vec3(1.0, 0.8, 0.9), noteHue * 0.2);
+    baseCol = mix(baseCol, vec3(0.85, 0.8, 0.95), noteHue * 0.1);
 
     return baseCol;
 }
@@ -219,15 +220,15 @@ vec3 light(vec3 origin, vec3 rayDir) {
     origin *= envOrientation;
     rayDir *= envOrientation;
 
-    // Audio affects light position
-    vec3 lightPos = vec3(-6.0 + bsMo.x * 2.0, bsMo.y * 2.0, 0.0);
+    // Gentle light position
+    vec3 lightPos = vec3(-5.0 + bsMo.x * 1.0, bsMo.y * 1.0, 0.0);
 
     vec2 uv;
     float hit = 1.0; // Simplified for this version
 
-    // Light intensity modulated by energy
-    float l = smoothstep(0.75, 0.0, length(origin - lightPos) - 3.0);
-    l *= 1.0 + audioEnergy;
+    // Soft light intensity
+    float l = smoothstep(0.6, 0.0, length(origin - lightPos) - 3.5);
+    l *= 0.8 + audioEnergy * 0.3;
 
     return vec3(l) * hit;
 }
@@ -240,8 +241,8 @@ vec3 env(vec3 origin, vec3 rayDir) {
     origin *= envOrientation;
     rayDir *= envOrientation;
 
-    float l = smoothstep(0.0, 1.7, dot(rayDir, vec3(0.5, -0.3, 1))) * 0.4;
-    l *= 1.0 + audioBright * 0.5;
+    float l = smoothstep(0.0, 1.5, dot(rayDir, vec3(0.5, -0.3, 1))) * 0.3;
+    l *= 0.9 + audioBright * 0.2;
 
     return vec3(l) * getBGColor();
 }
@@ -345,40 +346,40 @@ void main() {
     ? vec2(pc.render_w, pc.render_h)
     : vec2(800.0, 600.0);
 
-    // Cache audio parameters
-    audioEnergy = clamp(pc.note_velocity, 0.0, 1.0);
-    audioMod = clamp(pc.cc1, 0.0, 1.0);
-    audioBright = clamp(pc.cc74, 0.0, 1.0);
-    audioBend = clamp(pc.pitch_bend, -1.0, 1.0);
+    // Cache audio parameters with softening
+    audioEnergy = clamp(pc.note_velocity, 0.0, 1.0) * 0.6;
+    audioMod = clamp(pc.cc1, 0.0, 1.0) * 0.5;
+    audioBright = clamp(pc.cc74, 0.0, 1.0) * 0.5;
+    audioBend = clamp(pc.pitch_bend, -1.0, 1.0) * 0.5;
 
-    // Time with audio modulation
-    float timeScale = mix(0.8, 1.5, audioMod);
-    float duration = 8.0 - audioEnergy * 3.0; // Faster with energy
+    // Slow, soothing time progression
+    float timeScale = mix(0.4, 0.8, audioMod);
+    float duration = 12.0 - audioEnergy * 2.0;
     time = mod(pc.time * timeScale / duration + 0.1, 1.0);
     iTime = pc.time * timeScale;
 
     // Mouse setup
     iMouse = vec2(float(pc.mouse_x), float(pc.mouse_y));
 
-    // Interactive control
+    // Gentle interactive control
     if(pc.mouse_pressed > 0u) {
-        bsMo = (iMouse - 0.5 * iResolution.xy) / iResolution.y;
+        bsMo = (iMouse - 0.5 * iResolution.xy) / iResolution.y * 0.5;
     } else {
-        bsMo = vec2(pc.osc_ch1, pc.osc_ch2) * 0.5;
+        bsMo = vec2(pc.osc_ch1, pc.osc_ch2) * 0.3;
     }
 
-    // Environment orientation with audio
-    vec2 envAngles = vec2(0.87, 1.27) + bsMo * 0.5 + vec2(audioBend * 0.3, 0.0);
+    // Soft environment orientation
+    vec2 envAngles = vec2(0.87, 1.27) + bsMo * 0.3 + vec2(audioBend * 0.15, 0.0);
     envOrientation = sphericalMatrix(envAngles);
 
     vec2 q = fragUV;
     vec2 uv = (2. * fragUV - 1.) * vec2(iResolution.x / iResolution.y, 1.0);
 
-    // Hex pattern with audio modulation
-    vec2 hexOffset = time * vec2(0.1, 0.172) * 2.;
-    hexOffset *= 1.0 + audioEnergy; // Speed up with energy
-    float h = hex(uv.yx * 1.08 + hexOffset);
-    h -= 0.03;
+    // Gentle hex pattern
+    vec2 hexOffset = time * vec2(0.05, 0.086);
+    hexOffset *= 0.8 + audioEnergy * 0.2;
+    float h = hex(uv.yx * 0.9 + hexOffset);
+    h -= 0.02;
     h /= length(fwidth(uv * 10.));
     h = 1. - saturate(h);
 
@@ -398,18 +399,18 @@ void main() {
     invert = 1.;
     maxDist = 15.;
 
-    // Camera with audio reactivity
-    float fl = 20. - audioEnergy * 5.; // Zoom with energy
-    float camDist = 9.5 - audioEnergy * 2.; // Move closer with energy
+    // Gentle camera movement
+    float fl = 18. - audioEnergy * 2.;
+    float camDist = 9.0 - audioEnergy * 0.5;
 
     camOrigin = vec3(
-    sin(iTime * 0.2) * bsMo.x * 2.,
-    cos(iTime * 0.15) * bsMo.y * 2.,
+    sin(iTime * 0.1) * bsMo.x * 1.0,
+    cos(iTime * 0.08) * bsMo.y * 1.0,
     camDist * fl
     );
 
-    // Add vertex energy to camera shake
-    camOrigin.xy += vec2(sin(vertexEnergy * 10.), cos(vertexEnergy * 10.)) * 0.1;
+    // Subtle camera sway
+    camOrigin.xy += vec2(sin(vertexEnergy * 5.), cos(vertexEnergy * 5.)) * 0.03;
 
     camDir = normalize(vec3(uv * 0.168, -fl));
 
@@ -477,14 +478,14 @@ void main() {
                 break;
             }
 
-            // Shade with audio enhancement
-            sam += light(p, ref) * (0.5 + audioEnergy * 0.3);
-            sam += pow(max(1. - abs(dot(rayDir, nor)), 0.), 5.) * (0.1 + audioBright * 0.1);
-            sam *= vec3(0.85, 0.85, 0.98);
+            // Soft shading
+            sam += light(p, ref) * (0.4 + audioEnergy * 0.15);
+            sam += pow(max(1. - abs(dot(rayDir, nor)), 0.), 4.) * (0.15 + audioBright * 0.05);
+            sam *= vec3(0.9, 0.92, 0.98);
 
-            // Refract with audio-modulated IOR
-            float iorBase = mix(1.2, 1.8, wavelength);
-            iorBase += audioMod * 0.2; // Mod wheel affects refraction
+            // Gentle refraction
+            float iorBase = mix(1.3, 1.6, wavelength);
+            iorBase += audioMod * 0.1;
             ior = invert < 0. ? iorBase : 1. / iorBase;
 
             raf = refract(rayDir, nor, ior);
@@ -516,8 +517,8 @@ void main() {
             sam += env(p, rayDir);
         }
 
-        // Extinction with audio modulation
-        vec3 extinction = vec3(0.5) * (0.0 + audioEnergy * 0.05);
+        // Minimal extinction for brighter appearance
+        vec3 extinction = vec3(0.15) * (0.0 + audioEnergy * 0.02);
         extinction = 1. / (1. + (extinction * extinctionDist));
         col += sam * extinction * spectrum(-wavelength + 0.25);
     }
@@ -532,26 +533,26 @@ void main() {
         col = bgCol2;
     }
 
-    // Audio-reactive exposure
-    float exposure = 2.5 + audioEnergy * 1.0;
-    col = pow(col, vec3(1.19)) * exposure;
+    // Gentle exposure
+    float exposure = 1.8 + audioEnergy * 0.4;
+    col = pow(col, vec3(1.1)) * exposure;
 
     col = tonemap2(col);
 
-    // Post-processing matching original framework
+    // Soft post-processing
 
-    // Note count affects tint
+    // Gentle tint variations
     if(pc.note_count > 0u) {
         float noteInfluence = float(pc.note_count % 4u) * 0.25;
-        vec3 tint = mix(vec3(1.0, 0.97, 0.9), vec3(0.9, 0.95, 1.1), noteInfluence);
+        vec3 tint = mix(vec3(1.0, 0.98, 0.95), vec3(0.95, 0.97, 1.05), noteInfluence * 0.5);
         col *= tint;
     }
 
-    // Vignette with energy influence
+    // Soft vignette
     float vignetteBase = 16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y);
-    float vignettePower = 0.12 - audioEnergy * 0.05;
+    float vignettePower = 0.15 - audioEnergy * 0.03;
     float vignette = pow(vignetteBase, vignettePower);
-    col *= vignette * 0.7 + 0.3;
+    col *= vignette * 0.8 + 0.2;
 
     outColor = vec4(col, 1.0);
 }
