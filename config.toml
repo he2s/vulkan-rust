@@ -28,7 +28,7 @@ name = "New Fullscreen8"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "wildbeauty3.frag"
+fragment = "wildbeauty7.frag"
 
 [shader.presets.new1]
 name = "New Fullscreen81"
