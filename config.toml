@@ -49,7 +49,7 @@ name = "New Fullscreen15"
 enabled = true
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
-fragment = "new5.frag"
+fragment = "new21.frag"
 
 [shader.presets.new17]
 name = "New Fullscreen17"
