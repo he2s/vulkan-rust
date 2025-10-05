@@ -1,6 +1,3 @@
-// Vulkan-Rust Library
-// Public API for the vulkan-rust visualization engine
-
 // Core modules
 pub mod audio;
 pub mod beat_detection;
@@ -10,6 +7,8 @@ pub mod input;
 pub mod processing;
 pub mod state;
 pub mod utils;
+pub mod gfx;
+
 
 // Re-export commonly used types for convenience
 pub use config::config::{Args, Config, ShaderConfig, ShaderPreset, AudioConfig};
