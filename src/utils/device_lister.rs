@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ash::{Entry, vk};
+use ash::vk;
 use cpal::traits::{DeviceTrait, HostTrait};
 use midir::{Ignore, MidiInput};
 use std::ffi::{CString, CStr};

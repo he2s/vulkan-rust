@@ -1,3 +1,3 @@
-// Re-export the App struct and implementation from main for now
-// This allows gradual migration without breaking compilation
-pub use crate::main_app::*;
+// Re-export the App struct and implementation from main
+// The App struct is currently defined in main.rs as part of the working implementation
+pub use crate::App;
