@@ -149,3 +149,4 @@ compute = "point_generator.comp"
 enabled = true
 port = 7001
 address = "0.0.0.0"  #
+bind_address = "0.0.0.0"  #
