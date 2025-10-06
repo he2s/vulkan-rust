@@ -3,9 +3,6 @@ use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-// Re-export beat detection for convenience (avoiding duplicate imports)
-// pub use crate::beat_detection::{BeatDetectorConfig, BeatDetector}; // Unused for now
-
 const AUDIO_RING_CAPACITY: usize = 4096;
 const FFT_SAMPLE_SIZE: usize = 1024;
 const DEFAULT_SAMPLE_RATE: u32 = 48000;

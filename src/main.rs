@@ -5,7 +5,6 @@
 
 // Module declarations
 mod audio;
-mod beat_detection;
 mod config;
 mod gfx;
 mod graphics;
@@ -27,7 +26,6 @@ use crate::utils::DeviceLister;
 // External crate imports
 use anyhow::Result;
 use clap::Parser;
-use ash::{Entry, vk, khr::{surface, swapchain}};
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -61,54 +59,8 @@ const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
 
 
 // ============================================================================
-// GRAPHICS MODULE
-// This section contains all Vulkan graphics structures and implementations
-// Will be moved to graphics.rs in future modularization with sub-modules for each component
-// ============================================================================
-
-// vulkan graphics structures
-pub struct VulkanContext {
-    _entry: Entry,
-    instance: ash::Instance,
-    surface_loader: surface::Instance,
-    surface: vk::SurfaceKHR,
-    physical_device: vk::PhysicalDevice,
-    device: ash::Device,
-    queue_family_index: u32,
-    queue: vk::Queue,
-}
-
-pub struct VulkanSwapchain {
-    loader: swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    extent: vk::Extent2D,
-    format: vk::Format,
-    #[allow(dead_code)]
-    images: Vec<vk::Image>,
-    views: Vec<vk::ImageView>,
-}
-
-pub struct VulkanBuffers {
-    // Complex geometry buffers
-    vertex_buffer: vk::Buffer,
-    vertex_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_memory: vk::DeviceMemory,
-    instance_buffer: vk::Buffer,
-    instance_memory: vk::DeviceMemory,
-    // Storage buffer for compute-generated points
-    point_storage_buffer: vk::Buffer,
-    point_storage_memory: vk::DeviceMemory,
-
-    // Trivial geometry buffers (optimized fullscreen quad)
-    trivial_vertex_buffer: vk::Buffer,
-    trivial_vertex_memory: vk::DeviceMemory,
-}
-
-// ============================================================================
 // APPLICATION MODULE
 // This section contains the main application structure and window event handling
-// Will be moved to app.rs in future modularization
 // ============================================================================
 
 // main app

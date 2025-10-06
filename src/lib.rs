@@ -1,6 +1,5 @@
 // Core modules
 pub mod audio;
-pub mod beat_detection;
 pub mod config;
 pub mod graphics;
 pub mod input;
