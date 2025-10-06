@@ -2,17 +2,17 @@
 // Extracted from main.rs for better modularity
 
 use anyhow::{Result, anyhow};
-use ash::{Entry, vk, khr::{surface, swapchain}};
+use ash::vk;
 use std::{
     cell::RefCell,
-    ffi::{CString, c_char},
+    ffi::CString,
 };
 use winit::window::Window;
 
 // Re-export graphics types from graphics module
 use crate::graphics::{
     VulkanContext, VulkanSwapchain, VulkanBuffers, GeometryMode, PushConstants,
-    Vertex, InstanceData, PointData, ShaderSources
+    Vertex, InstanceData, ShaderSources
 };
 use crate::config::config::{ShaderConfig, GeometryType};
 

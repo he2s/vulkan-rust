@@ -46,7 +46,6 @@ pub struct AudioState {
 
     processing_buffer: Vec<Complex32>,
     windowing_buffer: Vec<f32>,
-    mono_conversion_buffer: Vec<f32>,
 
     beat_history: VecDeque<f64>,
     last_beat_time: f64,
@@ -73,10 +72,6 @@ impl std::fmt::Debug for AudioState {
             .field(
                 "windowing_buffer_capacity",
                 &self.windowing_buffer.capacity(),
-            )
-            .field(
-                "mono_conversion_buffer_capacity",
-                &self.mono_conversion_buffer.capacity(),
             )
             .finish()
     }
@@ -114,7 +109,6 @@ impl AudioState {
 
             processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
-            mono_conversion_buffer: Vec::with_capacity(1024),
 
             beat_history: VecDeque::with_capacity(16),
             last_beat_time: 0.0,
@@ -365,20 +359,6 @@ impl AudioState {
             SMOOTHING_FACTOR * self.levels.high + (1.0 - SMOOTHING_FACTOR) * normalize(high);
     }
 
-    #[allow(dead_code)]
-    pub fn convert_to_mono_optimized(&mut self, data: &[f32], channels: usize) -> &[f32] {
-        // truncate(0) is faster than clear() as it preserves capacity
-        self.mono_conversion_buffer.truncate(0);
-        self.mono_conversion_buffer
-            .reserve(data.len() / channels + 1);
-
-        for frame in data.chunks_exact(channels) {
-            let sample = frame.iter().sum::<f32>() / channels as f32;
-            self.mono_conversion_buffer.push(sample);
-        }
-
-        &self.mono_conversion_buffer
-    }
 
     pub fn push_audio_data(&mut self, data: &[f32], channels: usize, sample_rate: u32) {
         if channels == 1 {

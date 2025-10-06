@@ -16,31 +16,20 @@ mod utils;
 
 // Core application imports
 use crate::config::config::{
-    Args, AudioConfig, Config, ShaderConfig, ShaderPreset, GeometryType,
+    Args, Config,
     load_or_create_config, print_startup_info,
 };
 use crate::gfx::Gfx;
-use crate::graphics::{PushConstants, GeometryMode, Vertex, InstanceData, PointData, ShaderSources};
-use crate::input::midi::{MidiConfig, MidiManager};
-use crate::input::osc::{OscConfig, OscManager};
+use crate::graphics::PushConstants;
 use crate::input::InputManager;
-use crate::audio::{AudioLevels, AudioState, BeatState};
-use crate::state::FrameState;
 use crate::utils::DeviceLister;
 
 // External crate imports
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::Parser;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use midir::{Ignore, MidiInput};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use ash::{Entry, vk, khr::{surface, swapchain}};
 use std::{
-    cell::RefCell,
     collections::VecDeque,
-    ffi::{CString, CStr, c_char},
-    fs,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use winit::{
@@ -135,11 +124,7 @@ pub struct App {
     is_fullscreen: bool,
     current_shader_index: usize,
     shader_presets: Vec<String>,
-    #[allow(dead_code)]
-    frame_times: VecDeque<Instant>,
     last_fps_log: Instant,
-    #[allow(dead_code)]
-    frame_count: u64,
     frame_count_since_log: u32,
     cached_window_size: (u32, u32),
 
@@ -183,9 +168,7 @@ impl App {
             shader_presets,
             config,
 
-            frame_times: VecDeque::with_capacity(1000), // Store up to 1000 recent frame times
             last_fps_log: now,
-            frame_count: 0,
             frame_count_since_log: 0,
             cached_window_size: window_size,
 
@@ -379,7 +362,7 @@ impl App {
 
     fn update_window_title(&mut self) {
         // Only update title every 30 frames (~0.5 seconds at 60fps) to avoid spam
-        if !self.frame_count.is_multiple_of(30) {
+        if !self.frame_count_since_log.is_multiple_of(30) {
             return;
         }
 

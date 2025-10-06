@@ -6,7 +6,7 @@ pub mod egui_overlay;
 pub mod overlay;
 
 // Re-export Vulkan types for convenience
-pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers, VulkanCommands, VulkanSync};
+pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers};
 pub use shaders::ShaderSources;
 
 // Geometry types

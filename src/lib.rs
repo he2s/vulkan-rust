@@ -9,11 +9,8 @@ pub mod state;
 pub mod utils;
 pub mod gfx;
 
-
 // Re-export commonly used types for convenience
-pub use config::config::{Args, Config, ShaderConfig, ShaderPreset, AudioConfig};
-pub use graphics::{GeometryMode, Vertex, InstanceData, PushConstants};
-pub use graphics::vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers, VulkanCommands, VulkanSync};
-pub use input::{MidiConfig, MidiManager, OscConfig, OscManager};
+// Only re-export what's needed by external consumers of the library
+pub use config::config::Config;
+pub use graphics::PushConstants;
 pub use state::FrameState;
-pub use audio::{AudioLevels, AudioState, BeatState};

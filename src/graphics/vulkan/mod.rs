@@ -7,8 +7,6 @@ pub mod sync;
 // Re-export Vulkan types for easy access
 pub use context::VulkanContext;
 pub use swapchain::VulkanSwapchain;
-pub use commands::VulkanCommands;
-pub use sync::VulkanSync;
 
 // VulkanBuffers is defined in this file below
 
@@ -303,12 +301,5 @@ impl VulkanBuffers {
             device.destroy_buffer(self.trivial_vertex_buffer, None);
             device.free_memory(self.trivial_vertex_memory, None);
         }
-    }
-}
-
-impl Drop for VulkanBuffers {
-    fn drop(&mut self) {
-        // Note: This should be cleaned up properly in a real implementation
-        // For now, we'll rely on the device cleanup
     }
 }
