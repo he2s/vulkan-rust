@@ -20,33 +20,33 @@ enabled = true
 device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 
 [shader]
-active_preset = "cool0"
+active_preset = "new1"
 allow_runtime_switching = true
 
 [shader.presets.cool0]
 name = "Cool 0"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool0.frag"
 
 [shader.presets.cool1]
 name = "Cool 1"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool1.frag"
 
 [shader.presets.cool2]
 name = "Cool 2"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool2.frag"
 
 [shader.presets.cool3]
 name = "Cool 3"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool3.frag"
@@ -60,119 +60,119 @@ fragment = "cool4.frag"
 
 [shader.presets.cool5]
 name = "Cool 5"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool5.frag"
 
 [shader.presets.coola]
 name = "Cool a"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool6.frag"
 
 [shader.presets.cool7]
 name = "Cool 7"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool7.frag"
 
 [shader.presets.cool8]
 name = "Cool 8"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool8.frag"
 
 [shader.presets.coolc]
 name = "Cool c"
-enabled = true
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "cool9.frag"
 
-#[shader.presets.new2]
-#name = "New Fullscreen8"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "wildbeauty7.frag"
-#
-#[shader.presets.new1]
-#name = "New Fullscreen81"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new10.frag"
-#
-#[shader.presets.new13]
-#name = "New Fullscreen13"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new2.frag"
-#
-#[shader.presets.new15]
-#name = "New Fullscreen15"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new21.frag"
-#
-#[shader.presets.new17]
-#name = "New Fullscreen17"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new22.frag"
-#
-#[shader.presets.new19]
-#name = "New Fullscreen19"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new8.frag"
-#
-#[shader.presets.wildbeauty2]
-#name = "New Fullscreen78"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "new3.frag"
-#
-#[shader.presets.beauty]
-#name = "New Fullscreen2"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "beauty.frag"
-#
-#[shader.presets.new3]
-#name = "New Fullscreen"
-#enabled = true
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "wildbeauty.frag"
-#
-#[shader.presets.new4]
-#name = "New Fullscreen"
-#enabled = false
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "cloud.frag"
-#
-#[shader.presets.new5]
-#name = "New Fullscreen"
-#enabled = false
-#geometry_type = "fullscreen"
-#vertex = "fullscreen.vert"
-#fragment = "cloud2.frag"
+[shader.presets.new2]
+name = "New Fullscreen8"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "wildbeauty7.frag"
+
+[shader.presets.new1]
+name = "New Fullscreen81"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new10.frag"
+
+[shader.presets.new13]
+name = "New Fullscreen13"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new2.frag"
+
+[shader.presets.new15]
+name = "New Fullscreen15"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new21.frag"
+
+[shader.presets.new17]
+name = "New Fullscreen17"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new22.frag"
+
+[shader.presets.new19]
+name = "New Fullscreen19"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new8.frag"
+
+[shader.presets.wildbeauty2]
+name = "New Fullscreen78"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "new3.frag"
+
+[shader.presets.beauty]
+name = "New Fullscreen2"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "beauty.frag"
+
+[shader.presets.new3]
+name = "New Fullscreen"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "wildbeauty.frag"
+
+[shader.presets.new4]
+name = "New Fullscreen"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "cloud.frag"
+
+[shader.presets.new5]
+name = "New Fullscreen"
+enabled = false
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "cloud2.frag"
 
 [shader.presets.torus]
 name = "Torus Fullscreen"
-enabled = false
+nabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "stars.frag"
