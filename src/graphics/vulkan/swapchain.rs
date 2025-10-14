@@ -90,12 +90,24 @@ impl VulkanSwapchain {
 
     fn choose_extent(caps: &vk::SurfaceCapabilitiesKHR, window: &Window) -> vk::Extent2D {
         if caps.current_extent.width != u32::MAX {
-            caps.current_extent
+            // Clamp the current extent to valid bounds in case the window manager provides invalid values
+            vk::Extent2D {
+                width: caps.current_extent.width
+                    .clamp(caps.min_image_extent.width, caps.max_image_extent.width)
+                    .max(1),
+                height: caps.current_extent.height
+                    .clamp(caps.min_image_extent.height, caps.max_image_extent.height)
+                    .max(1),
+            }
         } else {
             let size = window.inner_size();
             vk::Extent2D {
-                width: size.width.max(1),
-                height: size.height.max(1),
+                width: size.width
+                    .clamp(caps.min_image_extent.width, caps.max_image_extent.width)
+                    .max(1),
+                height: size.height
+                    .clamp(caps.min_image_extent.height, caps.max_image_extent.height)
+                    .max(1),
             }
         }
     }

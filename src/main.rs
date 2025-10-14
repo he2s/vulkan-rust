@@ -156,6 +156,13 @@ impl App {
 
     fn toggle_fullscreen(&mut self) {
         if let Some(window) = &self.window {
+            // Wait for all Vulkan operations to complete before changing window state
+            if let Some(gfx) = &self.gfx {
+                if let Err(e) = unsafe { gfx.context.device.device_wait_idle() } {
+                    eprintln!("Warning: Failed to wait for device idle before fullscreen toggle: {e}");
+                }
+            }
+
             self.is_fullscreen = !self.is_fullscreen;
 
             let fullscreen = if self.is_fullscreen {
@@ -165,10 +172,26 @@ impl App {
             };
 
             window.set_fullscreen(fullscreen);
-            println!(
-                "Toggled fullscreen: {}",
-                if self.is_fullscreen { "ON" } else { "OFF" }
-            );
+
+            // Force swapchain recreation after fullscreen toggle to handle surface changes
+            if let Some(gfx) = &mut self.gfx {
+                // Small delay to allow window manager to complete the transition
+                std::thread::sleep(std::time::Duration::from_millis(50));
+
+                if let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
+                    eprintln!("Failed to recreate swapchain after fullscreen toggle: {e}");
+                } else {
+                    println!(
+                        "Toggled fullscreen: {} (swapchain recreated)",
+                        if self.is_fullscreen { "ON" } else { "OFF" }
+                    );
+                }
+            } else {
+                println!(
+                    "Toggled fullscreen: {}",
+                    if self.is_fullscreen { "ON" } else { "OFF" }
+                );
+            }
         }
     }
 

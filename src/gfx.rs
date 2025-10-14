@@ -105,20 +105,51 @@ impl Gfx {
     /// This function is unsafe because it calls unsafe Vulkan functions to destroy and recreate swapchain resources.
     /// The caller must ensure that all operations on the swapchain have completed before calling this function.
     pub unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<()> {
+        // Wait for all operations to complete
         unsafe { self.context.device.device_wait_idle()? };
 
+        // Store current extent for comparison
+        let old_extent = self.swapchain.extent;
+
+        // Clean up existing resources
         unsafe { self.pipeline.cleanup_framebuffers(&self.context.device) };
         unsafe { self.swapchain.cleanup(&self.context.device) };
 
-        self.swapchain = unsafe { VulkanSwapchain::new(&self.context, window, self.vsync)? };
+        // Attempt swapchain recreation with retry logic for Linux
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 3;
+
+        while attempts < MAX_ATTEMPTS {
+            match unsafe { VulkanSwapchain::new(&self.context, window, self.vsync) } {
+                Ok(new_swapchain) => {
+                    self.swapchain = new_swapchain;
+                    break;
+                }
+                Err(e) if attempts < MAX_ATTEMPTS - 1 => {
+                    println!("Swapchain creation attempt {} failed: {}, retrying...", attempts + 1, e);
+                    std::thread::sleep(std::time::Duration::from_millis(100 * (attempts + 1) as u64));
+                    attempts += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Recreate framebuffers
         unsafe { self.pipeline
             .recreate_framebuffers(&self.context.device, &self.swapchain)? };
 
+        // Reset state
         self.state.current_extent = None;
 
+        let extent_changed = old_extent.width != self.swapchain.extent.width ||
+                           old_extent.height != self.swapchain.extent.height;
+
         println!(
-            "Swapchain recreated: {}x{}",
-            self.swapchain.extent.width, self.swapchain.extent.height
+            "Swapchain recreated: {}x{} ({}{})",
+            self.swapchain.extent.width,
+            self.swapchain.extent.height,
+            if attempts > 0 { format!("after {} retries, ", attempts + 1) } else { String::new() },
+            if extent_changed { "extent changed" } else { "extent unchanged" }
         );
         Ok(())
     }
