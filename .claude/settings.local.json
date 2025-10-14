@@ -5,7 +5,8 @@
       "Bash(cargo clippy:*)",
       "Bash(cat:*)",
       "Bash(tree:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build:*)"
     ],
     "deny": [],
     "ask": []

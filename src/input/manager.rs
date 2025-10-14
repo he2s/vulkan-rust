@@ -99,33 +99,79 @@ impl InputManager {
     ) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
         let host = cpal::default_host();
         let device = self.select_audio_device(&host, config)?;
-        let audio_config = self.configure_audio_device(&device, config)?;
+
+        // Try to get a supported config with the requested sample rate
+        let (audio_config, sample_format) = self.configure_audio_device(&device, config)?;
 
         println!(
             "Using audio device: {}",
             device.name().unwrap_or_else(|_| "Unknown".into())
         );
         println!(
-            "Audio config: {:?}Hz, {:?}ch",
-            audio_config.sample_rate.0, audio_config.channels
+            "Audio config: {:?}Hz, {:?}ch, format: {:?}",
+            audio_config.sample_rate.0, audio_config.channels, sample_format
         );
 
         let audio_state = Arc::clone(&self.audio_state);
         let channels = audio_config.channels as usize;
+        let sample_rate = audio_config.sample_rate.0;
 
-        let stream = device.build_input_stream(
-            &audio_config,
-            move |data: &[f32], _| {
-                if let Ok(mut state) = audio_state.try_lock() {
-                    // Use optimized method that avoids borrow conflicts
-                    state.push_audio_data(data, channels, audio_config.sample_rate.0);
-                }
-            },
-            move |err| {
-                eprintln!("Audio input error: {err}");
-            },
-            None,
-        )?;
+        // Build stream based on the supported format
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => {
+                device.build_input_stream(
+                    &audio_config,
+                    move |data: &[f32], _| {
+                        if let Ok(mut state) = audio_state.try_lock() {
+                            state.push_audio_data(data, channels, sample_rate);
+                        }
+                    },
+                    move |err| {
+                        eprintln!("Audio input error: {err}");
+                    },
+                    None,
+                )?
+            }
+            cpal::SampleFormat::I16 => {
+                device.build_input_stream(
+                    &audio_config,
+                    move |data: &[i16], _| {
+                        if let Ok(mut state) = audio_state.try_lock() {
+                            // Convert i16 to f32 (normalize from -32768..32767 to -1.0..1.0)
+                            let f32_data: Vec<f32> = data.iter()
+                                .map(|&sample| sample as f32 / 32768.0)
+                                .collect();
+                            state.push_audio_data(&f32_data, channels, sample_rate);
+                        }
+                    },
+                    move |err| {
+                        eprintln!("Audio input error: {err}");
+                    },
+                    None,
+                )?
+            }
+            cpal::SampleFormat::U16 => {
+                device.build_input_stream(
+                    &audio_config,
+                    move |data: &[u16], _| {
+                        if let Ok(mut state) = audio_state.try_lock() {
+                            // Convert u16 to f32 (normalize from 0..65535 to -1.0..1.0)
+                            let f32_data: Vec<f32> = data.iter()
+                                .map(|&sample| (sample as f32 / 32768.0) - 1.0)
+                                .collect();
+                            state.push_audio_data(&f32_data, channels, sample_rate);
+                        }
+                    },
+                    move |err| {
+                        eprintln!("Audio input error: {err}");
+                    },
+                    None,
+                )?
+            }
+            _ => {
+                return Err(format!("Unsupported sample format: {:?}", sample_format).into());
+            }
+        };
 
         Ok(stream)
     }
@@ -154,33 +200,45 @@ impl InputManager {
         &self,
         device: &cpal::Device,
         config: &AudioConfig,
-    ) -> Result<cpal::StreamConfig, Box<dyn std::error::Error>> {
+    ) -> Result<(cpal::StreamConfig, cpal::SampleFormat), Box<dyn std::error::Error>> {
         let supported_configs = device.supported_input_configs()?.collect::<Vec<_>>();
         if supported_configs.is_empty() {
             return Err("No supported audio input configs".into());
         }
 
-        let mut stream_config = supported_configs[0].with_max_sample_rate().config();
+        // Try formats in order of preference: F32, I16, U16
+        let preferred_formats = [
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::U16,
+        ];
 
-        for supported_config in &supported_configs {
-            if supported_config.sample_format() == cpal::SampleFormat::F32 {
-                if let Some(desired_rate) = config.sample_rate {
-                    if supported_config.min_sample_rate().0 <= desired_rate
-                        && desired_rate <= supported_config.max_sample_rate().0
-                    {
-                        stream_config = (*supported_config)
-                            .with_sample_rate(cpal::SampleRate(desired_rate))
-                            .config();
-                        break;
-                    }
+        for format in &preferred_formats {
+            let matching_configs: Vec<_> = supported_configs
+                .iter()
+                .filter(|c| c.sample_format() == *format)
+                .collect();
+
+            if !matching_configs.is_empty() {
+                // Try to find a config matching the desired sample rate
+                let stream_config = if let Some(desired_rate) = config.sample_rate {
+                    matching_configs
+                        .iter()
+                        .find(|c| {
+                            c.min_sample_rate().0 <= desired_rate
+                                && desired_rate <= c.max_sample_rate().0
+                        })
+                        .map(|c| c.with_sample_rate(cpal::SampleRate(desired_rate)).config())
+                        .unwrap_or_else(|| matching_configs[0].with_max_sample_rate().config())
                 } else {
-                    stream_config = supported_config.with_max_sample_rate().config();
-                    break;
-                }
+                    matching_configs[0].with_max_sample_rate().config()
+                };
+
+                return Ok((stream_config, *format));
             }
         }
 
-        Ok(stream_config)
+        Err("No supported audio format found (tried F32, I16, U16)".into())
     }
 
     /// Set manual BPM override for beat detection
