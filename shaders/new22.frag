@@ -22,7 +22,6 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 1) in float vertexEnergy;
-layout(location = 2) in vec3 worldPos;
 
 layout(location = 0) out vec4 outColor;
 
@@ -84,16 +83,19 @@ vec2 usqdLineSegment(vec3 ro, vec3 rd, vec3 v0, vec3 v1) {
 vec3 castRay(vec3 ro, vec3 rd, float linesSpeed) {
     vec3 col = vec3(0.0);
 
-    float mindist = 10000.0;
     vec3 p = vec3(0.2);
     float h = 0.0;
 
-    // Audio-reactive line radius
-    float rad = 0.04 + 0.15*freqs[0];
-    float mint = 0.0;
-
     // Number of line segments - controlled by cc74
     int segments = int(64.0 + 64.0 * audioBright);
+
+    // Precompute loop-invariant values
+    const float h_step = 1.0 / 128.0;
+    const float color_freq = 62.831; // 10.0 * 6.2831
+    const vec3 color_phase = vec3(0.0, 0.6, 0.9);
+
+    float noise_time_base = linesSpeed * 0.015 * iTime;
+    float width_multiplier = 0.25 * (1.0 + audioEnergy * 0.5);
 
     for(int i=0; i<128; i++) {
         if (i >= segments) break;
@@ -101,32 +103,33 @@ vec3 castRay(vec3 ro, vec3 rd, float linesSpeed) {
         vec3 op = p;
 
         // Generate line position using noise
-        p = 1.25 * 1.0 * normalize(snoise3(64.0*h + linesSpeed*0.015*iTime));
+        p = 1.25 * normalize(snoise3(64.0*h + noise_time_base));
 
         // Distance from ray to line segment
         vec2 dis = usqdLineSegment(ro, rd, op, p);
 
         // Audio-reactive color
-        vec3 lcol = 0.6 + 0.4*sin(10.0*6.2831*h + vec3(0.0, 0.6, 0.9));
+        vec3 lcol = 0.6 + 0.4*sin(color_freq*h + color_phase);
 
-        // Modulate with audio frequency
+        // Modulate with audio frequency - optimize pow(m, 2.0) to m*m
         float m = freqs[int(h * 16.0)] * (1.0 + 2.0*h);
-        m = pow(m, 2.0);
+        m = m * m; // Faster than pow(m, 2.0)
 
         // Line tapering
         float f = 1.0 - 4.0*dis.y*(1.0-dis.y);
-        float width = 1240.0 - 1000.0*f;
-        width *= 0.25 * (1.0 + audioEnergy * 0.5);
+        float width = (1240.0 - 1000.0*f) * width_multiplier;
 
-        // Falloff along line
-        float ff = 1.0*exp(-0.06*dis.y*dis.y*dis.y);
+        // Falloff along line - cache dis.y*dis.y
+        float dis_y_sq = dis.y * dis.y;
+        float ff = exp(-0.06 * dis_y_sq * dis.y);
         ff *= m;
 
-        // Glow effect
-        col += 0.3*lcol*exp(-0.3*width*dis.x)*ff;
-        col += 0.5*lcol*exp(-8.0*width*dis.x)*ff;
+        // Glow effect - cache width*dis.x
+        float width_dist = width * dis.x;
+        col += 0.3*lcol*exp(-0.3*width_dist)*ff;
+        col += 0.5*lcol*exp(-8.0*width_dist)*ff;
 
-        h += 1.0/128.0;
+        h += h_step;
     }
 
     return col;
@@ -165,28 +168,28 @@ void main() {
     }
 
     // Generate frequency data from audio parameters
+    const float inv_16 = 1.0 / 16.0;
+    const float two_pi = 6.28318;
+
+    // Precompute note phase (used if note_count > 0)
+    float notePhase = float(pc.note_count % 8u) * 0.125; // 1.0/8.0 = 0.125
+
     for(int i=0; i<16; i++) {
-        float t = float(i) / 16.0;
+        float t = float(i) * inv_16;
 
         // Simulate frequency spectrum
-        float freq = 0.0;
-
-        // Low frequencies from note velocity
-        freq += audioEnergy * exp(-t * 3.0);
-
-        // Mid frequencies from vertex energy
-        freq += vertexEnergy * exp(-abs(t - 0.5) * 4.0);
-
-        // High frequencies from brightness
-        freq += audioBright * exp(-(1.0 - t) * 3.0);
+        float freq = audioEnergy * exp(-t * 3.0)
+                   + vertexEnergy * exp(-abs(t - 0.5) * 4.0)
+                   + audioBright * exp(-(1.0 - t) * 3.0);
 
         // Add variation based on note count
         if (pc.note_count > 0u) {
-            float notePhase = float(pc.note_count % 8u) / 8.0;
-            freq += 0.3 * sin(notePhase * 6.28318 + t * 6.28318);
+            freq += 0.3 * sin(notePhase * two_pi + t * two_pi);
         }
 
-        freqs[i] = clamp(1.9 * pow(freq, 3.0), 0.0, 1.0);
+        // Optimize pow(freq, 3.0) to freq*freq*freq
+        freq = freq * freq * freq;
+        freqs[i] = clamp(1.9 * freq, 0.0, 1.0);
     }
 
     float time = iTime;
@@ -238,15 +241,16 @@ void main() {
 
     // Cast ray and render
     vec3 col = castRay(ro, rd, 1.0 + 20.0*linesSpeed);
-    col = col*col*2.4;
+
+    // Optimize col*col*2.4
+    col = col * col * 2.4;
 
     // Brightness boost with audio
     col *= 1.0 + audioEnergy * 0.5;
 
     // Color tint based on pitch bend
-    vec3 tint = vec3(1.0);
     if (abs(audioBend) > 0.1) {
-        tint = mix(vec3(1.0, 0.9, 0.8), vec3(0.8, 0.9, 1.0), audioBend * 0.5 + 0.5);
+        vec3 tint = mix(vec3(1.0, 0.9, 0.8), vec3(0.8, 0.9, 1.0), audioBend * 0.5 + 0.5);
         col *= tint;
     }
 
@@ -257,8 +261,9 @@ void main() {
         col = mix(col, col * cycleColor, 0.2);
     }
 
-    // Vignette
-    col *= 0.15 + 0.85*pow(16.0*q.x*q.y*(1.0-q.x)*(1.0-q.y), 0.15);
+    // Vignette - cache vignette base calculation
+    float vignette_base = 16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y);
+    col *= 0.15 + 0.85 * pow(vignette_base, 0.15);
 
     outColor = vec4(col, 1.0);
 }

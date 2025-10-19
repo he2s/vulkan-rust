@@ -18,30 +18,26 @@ layout(push_constant) uniform PushConstants {
     uint render_h;
 } pc;
 
+// Vertex inputs (from buffer) - matches Rust GeometryMode::Trivial
+layout(location = 0) in vec2 in_position;
+layout(location = 1) in vec2 in_uv;
+
+// Outputs to fragment shader
 layout(location = 0) out vec2 frag_uv;
-layout(location = 1) out vec2 frag_screen_pos;
-
-// Simple fullscreen triangle
-vec2 positions[3] = vec2[](
-vec2(-1.0, -1.0),
-vec2( 3.0, -1.0),
-vec2(-1.0,  3.0)
-);
-
-vec2 uvs[3] = vec2[](
-vec2(0.0, 0.0),
-vec2(2.0, 0.0),
-vec2(0.0, 2.0)
-);
+layout(location = 1) out float vertex_energy;
+layout(location = 2) out vec3 world_pos;
 
 void main() {
-    vec2 pos = positions[gl_VertexIndex];
-    vec2 uv = uvs[gl_VertexIndex];
+    // Use vertex data from buffer
+    gl_Position = vec4(in_position, 0.0, 1.0);
 
-    // Output position (no transformation, completely flat)
-    gl_Position = vec4(pos, 0.0, 1.0);
+    // Pass UV to fragment shader
+    frag_uv = in_uv;
 
-    // Pass UV and screen position to fragment shader
-    frag_uv = uv;
-    frag_screen_pos = pos;
+    // Compute vertex energy based on distance from center
+    vertex_energy = 1.0 - length(in_position) * 0.5;
+    vertex_energy = clamp(vertex_energy, 0.0, 1.0);
+
+    // Compute world position (for shaders that need it)
+    world_pos = vec3(in_position, 0.0);
 }
