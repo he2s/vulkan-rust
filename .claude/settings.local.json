@@ -6,7 +6,13 @@
       "Bash(cat:*)",
       "Bash(tree:*)",
       "Bash(cargo check:*)",
-      "Bash(CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build:*)"
+      "Bash(CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build:*)",
+      "Bash(glslangValidator:*)",
+      "Bash(glslc:*)",
+      "Read(//tmp/**)",
+      "Bash(find:*)",
+      "Bash(for:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
