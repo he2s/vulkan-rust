@@ -238,7 +238,7 @@ impl DeviceLister {
     }
 
     fn list_audio_devices() {
-        println!("🎵 Audio Input Devices:");
+        println!("🎵 Audio Input Devices Sucker!:");
         println!("----------------------");
 
         let host = cpal::default_host();
