@@ -17,7 +17,7 @@ validation_layers = true
 
 [audio]
 enabled = true
-device_name = "Loopback Main 7/8 (Minifuse 2)"
+device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 #device_name = "hw:CARD=Loopback,DEV=1"
 #[0] default (1Hz-384000Hz, 1 channels)
 #[1] samplerate (1Hz-4294967295Hz, 1 channels)
