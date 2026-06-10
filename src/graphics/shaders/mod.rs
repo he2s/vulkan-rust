@@ -1,10 +1,25 @@
 use anyhow::{Result, anyhow};
+use std::cell::RefCell;
 use std::fs;
 use crate::config::config::{ShaderConfig, ShaderPreset, GeometryType};
 use crate::graphics::GeometryMode;
 
-pub mod compiler;
-pub mod cache;
+thread_local! {
+    static SHADER_COMPILER: RefCell<Option<shaderc::Compiler>> = const { RefCell::new(None) };
+}
+
+pub fn compile_to_spirv(source: &str, kind: shaderc::ShaderKind, filename: &str) -> Result<Vec<u32>> {
+    SHADER_COMPILER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let compiler = slot.get_or_insert_with(|| {
+            shaderc::Compiler::new().expect("Failed to create shader compiler")
+        });
+        let result = compiler
+            .compile_into_spirv(source, kind, filename, "main", None)
+            .map_err(|e| anyhow!("Shader compilation failed: {}", e))?;
+        Ok(result.as_binary().to_vec())
+    })
+}
 
 pub struct ShaderSources {
     pub vertex: String,
@@ -16,39 +31,23 @@ fn try_read_to_string<P: AsRef<std::path::Path>>(p: P) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
 
+pub fn geometry_mode_from_preset(preset: &ShaderPreset) -> GeometryMode {
+    match preset.geometry_type {
+        GeometryType::Fullscreen => GeometryMode::Trivial,
+        GeometryType::Points if preset.geometry.is_some() => GeometryMode::GeometryShader,
+        GeometryType::Points => GeometryMode::Trivial,
+        GeometryType::Vertices => GeometryMode::Trivial,
+        GeometryType::Compute => GeometryMode::ComputeGenerated,
+    }
+}
+
+pub fn geometry_mode_from_config(config: &ShaderConfig) -> Result<GeometryMode> {
+    let preset = config.presets.get(&config.active_preset)
+        .ok_or_else(|| anyhow!("Active preset '{}' not found", config.active_preset))?;
+    Ok(geometry_mode_from_preset(preset))
+}
+
 impl ShaderSources {
-    pub fn determine_geometry_mode(&self) -> GeometryMode {
-        // Check for geometry shader first
-        if self.geometry.is_some() {
-            return GeometryMode::GeometryShader;
-        }
-
-        // Check vertex shader content to determine mode
-        if self.vertex.contains("fullscreen.vert") ||
-           self.vertex.contains("in_position") &&
-           !self.vertex.contains("instance_") &&
-           !self.vertex.contains("gl_InstanceIndex") {
-            GeometryMode::Trivial
-        } else if self.vertex.contains("instance_") ||
-                  self.vertex.contains("gl_InstanceIndex") {
-            GeometryMode::InstancedTriangles
-        } else if self.vertex.contains("compute") ||
-                  self.fragment.contains("compute") {
-            GeometryMode::ComputeGenerated
-        } else {
-            GeometryMode::Trivial
-        }
-    }
-
-    pub fn geometry_mode_from_preset(preset: &ShaderPreset) -> GeometryMode {
-        match preset.geometry_type {
-            GeometryType::Fullscreen => GeometryMode::Trivial,
-            GeometryType::Points if preset.geometry.is_some() => GeometryMode::GeometryShader,
-            GeometryType::Points => GeometryMode::Trivial,
-            GeometryType::Vertices => GeometryMode::Trivial,
-            GeometryType::Compute => GeometryMode::ComputeGenerated,
-        }
-    }
 
     pub fn load_preset(preset: &ShaderPreset) -> Result<Self> {
         println!("Loading preset: {}", preset.name);
@@ -103,22 +102,6 @@ impl ShaderSources {
             Ok(content) => Ok(content),
             Err(e) => Err(anyhow!("Failed to load shader '{}': {}", shader_path.display(), e)),
         }
-    }
-
-    pub fn load_from_files(vertex_path: &str, fragment_path: &str) -> Result<Self> {
-        Ok(Self {
-            vertex: fs::read_to_string(vertex_path)?,
-            geometry: None,
-            fragment: fs::read_to_string(fragment_path)?,
-        })
-    }
-
-    pub fn load_from_files_with_geometry(vertex_path: &str, geometry_path: &str, fragment_path: &str) -> Result<Self> {
-        Ok(Self {
-            vertex: fs::read_to_string(vertex_path)?,
-            geometry: Some(fs::read_to_string(geometry_path)?),
-            fragment: fs::read_to_string(fragment_path)?,
-        })
     }
 
     pub fn load_from_config(config: &ShaderConfig) -> Result<Self> {

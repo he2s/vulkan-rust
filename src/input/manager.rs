@@ -137,11 +137,7 @@ impl InputManager {
                     &audio_config,
                     move |data: &[i16], _| {
                         if let Ok(mut state) = audio_state.try_lock() {
-                            // Convert i16 to f32 (normalize from -32768..32767 to -1.0..1.0)
-                            let f32_data: Vec<f32> = data.iter()
-                                .map(|&sample| sample as f32 / 32768.0)
-                                .collect();
-                            state.push_audio_data(&f32_data, channels, sample_rate);
+                            state.push_audio_data_i16(data, channels, sample_rate);
                         }
                     },
                     move |err| {
@@ -155,11 +151,7 @@ impl InputManager {
                     &audio_config,
                     move |data: &[u16], _| {
                         if let Ok(mut state) = audio_state.try_lock() {
-                            // Convert u16 to f32 (normalize from 0..65535 to -1.0..1.0)
-                            let f32_data: Vec<f32> = data.iter()
-                                .map(|&sample| (sample as f32 / 32768.0) - 1.0)
-                                .collect();
-                            state.push_audio_data(&f32_data, channels, sample_rate);
+                            state.push_audio_data_u16(data, channels, sample_rate);
                         }
                     },
                     move |err| {
@@ -248,12 +240,4 @@ impl InputManager {
         }
     }
 
-    /// Check if audio system is in manual tempo mode
-    pub fn is_manual_tempo_mode(&self) -> bool {
-        if let Ok(audio_state) = self.audio_state.try_lock() {
-            audio_state.is_manual_tempo_mode()
-        } else {
-            false
-        }
-    }
 }

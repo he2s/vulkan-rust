@@ -12,11 +12,12 @@ auto_connect = true
 port_name = "MPK261"
 
 [graphics]
-vsync = true
+vsync = false
 validation_layers = true
 
 [audio]
 enabled = true
+#device_name = "DEFAULT"
 device_name = "CABLE Output (2- VB-Audio Virtual Cable)"
 #device_name = "hw:CARD=Loopback,DEV=1"
 #[0] default (1Hz-384000Hz, 1 channels)
@@ -187,7 +188,7 @@ fragment = "cloud2.frag"
 
 [shader.presets.torus]
 name = "Torus Fullscreen"
-nabled = false
+enabled = false
 geometry_type = "fullscreen"
 vertex = "fullscreen.vert"
 fragment = "stars.frag"
@@ -229,6 +230,148 @@ geometry_type = "compute"
 vertex = "instanced_triangles.vert"
 fragment = "instanced_triangles.frag"
 compute = "point_generator.comp"
+
+# ─── new beauty pack ───
+
+[shader.presets.aurora]
+name = "Aurora"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "aurora.frag"
+
+[shader.presets.molten_glass]
+name = "Molten Glass"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "molten_glass.frag"
+
+[shader.presets.fractal_bloom]
+name = "Fractal Bloom"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "fractal_bloom.frag"
+
+[shader.presets.liquid_metal]
+name = "Liquid Metal"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "liquid_metal.frag"
+
+[shader.presets.cosmic_jelly]
+name = "Cosmic Jelly"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "cosmic_jelly.frag"
+
+[shader.presets.plasma_cathedral]
+name = "Plasma Cathedral"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "plasma_cathedral.frag"
+
+[shader.presets.velvet_void]
+name = "Velvet Void"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "velvet_void.frag"
+
+[shader.presets.hypergrid]
+name = "Hypergrid"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "hypergrid.frag"
+
+[shader.presets.kaleido_ifs]
+name = "Kaleido IFS"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "kaleido_ifs.frag"
+
+[shader.presets.paper_garden]
+name = "Paper Garden"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "paper_garden.frag"
+
+[shader.presets.electric_kelp]
+name = "Electric Kelp"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "electric_kelp.frag"
+
+[shader.presets.starforge]
+name = "Starforge"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "starforge.frag"
+
+[shader.presets.lava_rivers]
+name = "Lava Rivers"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "lava_rivers.frag"
+
+[shader.presets.quantum_foam]
+name = "Quantum Foam"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "quantum_foam.frag"
+
+[shader.presets.silk_smoke]
+name = "Silk Smoke"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "silk_smoke.frag"
+
+[shader.presets.prism_storm]
+name = "Prism Storm"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "prism_storm.frag"
+
+[shader.presets.deep_ocean]
+name = "Deep Ocean"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "deep_ocean.frag"
+
+[shader.presets.neon_origami]
+name = "Neon Origami"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "neon_origami.frag"
+
+[shader.presets.galaxy_swirl]
+name = "Galaxy Swirl"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "galaxy_swirl.frag"
+
+[shader.presets.dreamfield]
+name = "Dreamfield"
+enabled = true
+geometry_type = "fullscreen"
+vertex = "fullscreen.vert"
+fragment = "dreamfield.frag"
 
 [osc]
 enabled = true

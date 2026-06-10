@@ -3,11 +3,10 @@
 
 use anyhow::{Result, anyhow};
 use ash::vk;
-use std::{
-    cell::RefCell,
-    ffi::CString,
-};
+use std::ffi::CString;
 use winit::window::Window;
+
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 // Re-export graphics types from graphics module
 use crate::graphics::{
@@ -15,11 +14,6 @@ use crate::graphics::{
     Vertex, InstanceData, ShaderSources
 };
 use crate::config::config::{ShaderConfig, GeometryType};
-
-// ============================================================================
-// VULKAN STRUCTURES
-// Core Vulkan wrapper structures used by the Gfx interface
-// ============================================================================
 
 pub struct VulkanPipeline {
     pub render_pass: vk::RenderPass,
@@ -42,24 +36,21 @@ pub struct VulkanPipeline {
 pub struct VulkanCommands {
     pub pool: vk::CommandPool,
     pub buffers: Vec<vk::CommandBuffer>,
-    pub frame_index: RefCell<usize>,
 }
 
 pub struct VulkanSync {
-    image_available: vk::Semaphore,
-    render_finished: vk::Semaphore,
-    in_flight: vk::Fence,
+    // Per frame-in-flight
+    image_available: Vec<vk::Semaphore>,
+    in_flight: Vec<vk::Fence>,
+    // Per swapchain image — guarantees the present that consumed this semaphore
+    // has completed before the same image is reacquired.
+    render_finished: Vec<vk::Semaphore>,
 }
 
 #[derive(Default)]
 pub struct VulkanState {
     current_extent: Option<vk::Extent2D>,
 }
-
-// ============================================================================
-// GFX MAIN STRUCTURE
-// The main graphics interface that combines all Vulkan components
-// ============================================================================
 
 pub struct Gfx {
     pub context: VulkanContext,
@@ -70,12 +61,8 @@ pub struct Gfx {
     pub sync: VulkanSync,
     pub state: VulkanState,
     pub vsync: bool,
+    current_frame: usize,
 }
-
-// ============================================================================
-// IMPLEMENTATIONS
-// Implementation blocks for all the graphics structures
-// ============================================================================
 
 impl Gfx {
     /// # Safety
@@ -87,7 +74,7 @@ impl Gfx {
         let buffers = unsafe { VulkanBuffers::new(&context)? };
         let pipeline = unsafe { VulkanPipeline::new(&context, &swapchain, shader_config, &buffers)? };
         let commands = unsafe { VulkanCommands::new(&context)? };
-        let sync = unsafe { VulkanSync::new(&context)? };
+        let sync = unsafe { VulkanSync::new(&context, swapchain.images.len())? };
 
         Ok(Self {
             context,
@@ -98,6 +85,7 @@ impl Gfx {
             sync,
             state: VulkanState::default(),
             vsync,
+            current_frame: 0,
         })
     }
 
@@ -105,50 +93,29 @@ impl Gfx {
     /// This function is unsafe because it calls unsafe Vulkan functions to destroy and recreate swapchain resources.
     /// The caller must ensure that all operations on the swapchain have completed before calling this function.
     pub unsafe fn recreate_swapchain(&mut self, window: &Window) -> Result<()> {
-        // Wait for all operations to complete
         unsafe { self.context.device.device_wait_idle()? };
 
-        // Store current extent for comparison
         let old_extent = self.swapchain.extent;
 
-        // Clean up existing resources
         unsafe { self.pipeline.cleanup_framebuffers(&self.context.device) };
         unsafe { self.swapchain.cleanup(&self.context.device) };
 
-        // Attempt swapchain recreation with retry logic for Linux
-        let mut attempts = 0;
-        const MAX_ATTEMPTS: u32 = 3;
+        self.swapchain = unsafe { VulkanSwapchain::new(&self.context, window, self.vsync)? };
 
-        while attempts < MAX_ATTEMPTS {
-            match unsafe { VulkanSwapchain::new(&self.context, window, self.vsync) } {
-                Ok(new_swapchain) => {
-                    self.swapchain = new_swapchain;
-                    break;
-                }
-                Err(e) if attempts < MAX_ATTEMPTS - 1 => {
-                    println!("Swapchain creation attempt {} failed: {}, retrying...", attempts + 1, e);
-                    std::thread::sleep(std::time::Duration::from_millis(100 * (attempts + 1) as u64));
-                    attempts += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        unsafe { self.sync.recreate_render_finished(&self.context.device, self.swapchain.images.len())? };
 
-        // Recreate framebuffers
         unsafe { self.pipeline
             .recreate_framebuffers(&self.context.device, &self.swapchain)? };
 
-        // Reset state
         self.state.current_extent = None;
 
-        let extent_changed = old_extent.width != self.swapchain.extent.width ||
-                           old_extent.height != self.swapchain.extent.height;
+        let extent_changed = old_extent.width != self.swapchain.extent.width
+            || old_extent.height != self.swapchain.extent.height;
 
         println!(
-            "Swapchain recreated: {}x{} ({}{})",
+            "Swapchain recreated: {}x{} ({})",
             self.swapchain.extent.width,
             self.swapchain.extent.height,
-            if attempts > 0 { format!("after {} retries, ", attempts + 1) } else { String::new() },
             if extent_changed { "extent changed" } else { "extent unchanged" }
         );
         Ok(())
@@ -178,29 +145,33 @@ impl Gfx {
         egui_primitives: Option<&Vec<egui::ClippedPrimitive>>,
         egui_overlay: Option<&mut crate::graphics::egui_overlay::EguiOverlay>,
     ) -> Result<bool> {
-        unsafe { self.context
-            .device
-            .wait_for_fences(&[self.sync.in_flight], true, u64::MAX)? };
-        unsafe { self.context.device.reset_fences(&[self.sync.in_flight])? };
+        let f = self.current_frame;
+        let fence = self.sync.in_flight[f];
 
-        let (image_index, needs_recreation) = unsafe { self.acquire_next_image()? };
+        unsafe { self.context.device.wait_for_fences(&[fence], true, u64::MAX)? };
+
+        let (image_index, needs_recreation) = unsafe { self.acquire_next_image(f)? };
         if needs_recreation {
             return Ok(true);
         }
 
-        let cmd_buffer = self.commands.get_current_buffer();
+        unsafe { self.context.device.reset_fences(&[fence])? };
+
+        let cmd_buffer = self.commands.buffers[f];
         unsafe { self.record_command_buffer(cmd_buffer, image_index, push_constants, egui_primitives, egui_overlay)? };
 
-        unsafe { self.submit_commands(cmd_buffer)? };
+        unsafe { self.submit_commands(cmd_buffer, f, image_index as usize)? };
 
-        unsafe { self.present_image(image_index) }
+        let result = unsafe { self.present_image(image_index) };
+        self.current_frame = (f + 1) % MAX_FRAMES_IN_FLIGHT;
+        result
     }
 
-    unsafe fn acquire_next_image(&self) -> Result<(u32, bool)> {
+    unsafe fn acquire_next_image(&self, frame: usize) -> Result<(u32, bool)> {
         match unsafe { self.swapchain.loader.acquire_next_image(
             self.swapchain.swapchain,
             u64::MAX,
-            self.sync.image_available,
+            self.sync.image_available[frame],
             vk::Fence::null(),
         ) } {
             Ok((index, suboptimal)) => Ok((index, suboptimal)),
@@ -459,8 +430,8 @@ impl Gfx {
         }
 
         // Render egui overlay if primitives exist
-        if let (Some(primitives), Some(overlay)) = (egui_primitives, egui_overlay) {
-            if !primitives.is_empty() {
+        if let (Some(primitives), Some(overlay)) = (egui_primitives, egui_overlay)
+            && !primitives.is_empty() {
                 unsafe {
                     overlay.render(
                         &self.context.instance,
@@ -472,7 +443,6 @@ impl Gfx {
                     )?;
                 }
             }
-        }
 
         unsafe {
             self.context.device.cmd_end_render_pass(cmd_buffer);
@@ -484,13 +454,10 @@ impl Gfx {
         Ok(())
     }
 
-    unsafe fn submit_commands(&self, cmd_buffer: vk::CommandBuffer) -> Result<()> {
-        // Ensure queue is idle before signaling semaphores to avoid VUID-vkQueueSubmit-pSignalSemaphores-00067
-        unsafe { self.context.device.queue_wait_idle(self.context.queue)? };
-
-        let wait_semaphores = [self.sync.image_available];
+    unsafe fn submit_commands(&self, cmd_buffer: vk::CommandBuffer, frame: usize, image: usize) -> Result<()> {
+        let wait_semaphores = [self.sync.image_available[frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.sync.render_finished];
+        let signal_semaphores = [self.sync.render_finished[image]];
         let command_buffers = [cmd_buffer];
 
         let submit_info = vk::SubmitInfo {
@@ -507,14 +474,14 @@ impl Gfx {
         unsafe { self.context.device.queue_submit(
             self.context.queue,
             &[submit_info],
-            self.sync.in_flight,
+            self.sync.in_flight[frame],
         )? };
         Ok(())
     }
 
     unsafe fn present_image(&self, image_index: u32) -> Result<bool> {
         let swapchains = [self.swapchain.swapchain];
-        let wait_semaphores = [self.sync.render_finished];
+        let wait_semaphores = [self.sync.render_finished[image_index as usize]];
         let image_indices = [image_index];
 
         let present_info = vk::PresentInfoKHR {
@@ -553,9 +520,7 @@ impl VulkanPipeline {
             .map(|p| p.geometry_type == GeometryType::Compute)
             .unwrap_or(false);
 
-        // Determine geometry mode from shader sources first
-        let shader_sources = ShaderSources::load_from_config(shader_config)?;
-        let geometry_mode = shader_sources.determine_geometry_mode();
+        let geometry_mode = crate::graphics::shaders::geometry_mode_from_config(shader_config)?;
 
         // Create compute pipeline and descriptor sets first if needed
         let (compute_pipeline_layout, compute_pipeline, descriptor_set_layout, descriptor_pool, descriptor_set) =
@@ -728,7 +693,7 @@ impl VulkanPipeline {
         });
 
         // Determine geometry mode
-        let geometry_mode = shader_sources.determine_geometry_mode();
+        let geometry_mode = crate::graphics::shaders::geometry_mode_from_config(shader_config)?;
 
         let (vertex_binding_descriptions, vertex_attribute_descriptions) = match geometry_mode {
             GeometryMode::Trivial => {
@@ -904,14 +869,7 @@ impl VulkanPipeline {
     }
 
     unsafe fn compile_shader(source: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>> {
-        let compiler =
-            shaderc::Compiler::new().ok_or_else(|| anyhow!("Failed to create shader compiler"))?;
-
-        let result = compiler
-            .compile_into_spirv(source, kind, "shader", "main", None)
-            .map_err(|e| anyhow!("Shader compilation failed: {}", e))?;
-
-        Ok(result.as_binary().to_vec())
+        crate::graphics::shaders::compile_to_spirv(source, kind, "shader")
     }
 
     unsafe fn create_shader_module(device: &ash::Device, code: &[u32]) -> Result<vk::ShaderModule> {
@@ -1075,17 +1033,34 @@ impl VulkanPipeline {
         swapchain: &VulkanSwapchain,
         shader_config: &ShaderConfig,
     ) -> Result<()> {
-        let shader_sources = ShaderSources::load_from_config(shader_config)?;
-        let geometry_mode = shader_sources.determine_geometry_mode();
+        let new_geometry_mode = crate::graphics::shaders::geometry_mode_from_config(shader_config)?;
+
+        // The pipeline layout's push-constant stage flags depend on geometry_mode
+        // (GeometryShader presets need the GEOMETRY bit). Rebuild on mode change.
+        let layout_changed = new_geometry_mode != self.geometry_mode;
+        let new_pipeline_layout = if layout_changed {
+            let dsl = (self.descriptor_set_layout != vk::DescriptorSetLayout::null())
+                .then_some(self.descriptor_set_layout);
+            unsafe { Self::create_graphics_pipeline_layout(&context.device, dsl, new_geometry_mode)? }
+        } else {
+            self.pipeline_layout
+        };
+
         let (pipeline, _) = unsafe { Self::create_graphics_pipeline(
             &context.device,
             self.render_pass,
-            self.pipeline_layout,
+            new_pipeline_layout,
             swapchain,
             shader_config,
         )? };
+
+        if layout_changed {
+            unsafe { context.device.destroy_pipeline_layout(self.pipeline_layout, None) };
+            self.pipeline_layout = new_pipeline_layout;
+        }
+
         self.pipeline = pipeline;
-        self.geometry_mode = geometry_mode;
+        self.geometry_mode = new_geometry_mode;
         Ok(())
     }
 
@@ -1123,40 +1098,50 @@ impl VulkanCommands {
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool: pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 2,
+            command_buffer_count: MAX_FRAMES_IN_FLIGHT as u32,
             ..Default::default()
         };
 
         let buffers = unsafe { context.device.allocate_command_buffers(&alloc_info)? };
 
-        Ok(Self {
-            pool,
-            buffers,
-            frame_index: RefCell::new(0),
-        })
-    }
-
-    fn get_current_buffer(&self) -> vk::CommandBuffer {
-        let mut idx = self.frame_index.borrow_mut();
-        let cmd = self.buffers[*idx % self.buffers.len()];
-        *idx = (*idx + 1) % self.buffers.len();
-        cmd
+        Ok(Self { pool, buffers })
     }
 }
 
 impl VulkanSync {
-    unsafe fn new(context: &VulkanContext) -> Result<Self> {
+    unsafe fn new(context: &VulkanContext, image_count: usize) -> Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let fence_info = vk::FenceCreateInfo {
             flags: vk::FenceCreateFlags::SIGNALED,
             ..Default::default()
         };
 
-        Ok(Self {
-            image_available: unsafe { context.device.create_semaphore(&semaphore_info, None)? },
-            render_finished: unsafe { context.device.create_semaphore(&semaphore_info, None)? },
-            in_flight: unsafe { context.device.create_fence(&fence_info, None)? },
-        })
+        let mut image_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            image_available.push(unsafe { context.device.create_semaphore(&semaphore_info, None)? });
+            in_flight.push(unsafe { context.device.create_fence(&fence_info, None)? });
+        }
+
+        let mut render_finished = Vec::with_capacity(image_count);
+        for _ in 0..image_count {
+            render_finished.push(unsafe { context.device.create_semaphore(&semaphore_info, None)? });
+        }
+
+        Ok(Self { image_available, render_finished, in_flight })
+    }
+
+    unsafe fn recreate_render_finished(&mut self, device: &ash::Device, image_count: usize) -> Result<()> {
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        for &sem in &self.render_finished {
+            unsafe { device.destroy_semaphore(sem, None) };
+        }
+        self.render_finished.clear();
+        self.render_finished.reserve(image_count);
+        for _ in 0..image_count {
+            self.render_finished.push(unsafe { device.create_semaphore(&semaphore_info, None)? });
+        }
+        Ok(())
     }
 }
 
@@ -1165,13 +1150,15 @@ impl Drop for Gfx {
         unsafe {
             let _ = self.context.device.device_wait_idle();
 
-            self.context.device.destroy_fence(self.sync.in_flight, None);
-            self.context
-                .device
-                .destroy_semaphore(self.sync.render_finished, None);
-            self.context
-                .device
-                .destroy_semaphore(self.sync.image_available, None);
+            for &fence in &self.sync.in_flight {
+                self.context.device.destroy_fence(fence, None);
+            }
+            for &sem in &self.sync.render_finished {
+                self.context.device.destroy_semaphore(sem, None);
+            }
+            for &sem in &self.sync.image_available {
+                self.context.device.destroy_semaphore(sem, None);
+            }
 
             self.context
                 .device
@@ -1182,6 +1169,20 @@ impl Drop for Gfx {
 
             self.pipeline.cleanup_framebuffers(&self.context.device);
             self.pipeline.cleanup_pipeline(&self.context.device);
+
+            if self.pipeline.compute_pipeline != vk::Pipeline::null() {
+                self.context.device.destroy_pipeline(self.pipeline.compute_pipeline, None);
+            }
+            if self.pipeline.compute_pipeline_layout != vk::PipelineLayout::null() {
+                self.context.device.destroy_pipeline_layout(self.pipeline.compute_pipeline_layout, None);
+            }
+            if self.pipeline.descriptor_pool != vk::DescriptorPool::null() {
+                self.context.device.destroy_descriptor_pool(self.pipeline.descriptor_pool, None);
+            }
+            if self.pipeline.descriptor_set_layout != vk::DescriptorSetLayout::null() {
+                self.context.device.destroy_descriptor_set_layout(self.pipeline.descriptor_set_layout, None);
+            }
+
             self.context
                 .device
                 .destroy_pipeline_layout(self.pipeline.pipeline_layout, None);
@@ -1192,11 +1193,8 @@ impl Drop for Gfx {
             self.buffers.cleanup(&self.context.device);
             self.swapchain.cleanup(&self.context.device);
 
-            self.context
-                .surface_loader
-                .destroy_surface(self.context.surface, None);
-            self.context.device.destroy_device(None);
-            self.context.instance.destroy_instance(None);
+            // device / surface / instance are destroyed by VulkanContext::drop
+            // when self.context drops as a field after this body returns.
         }
     }
 }

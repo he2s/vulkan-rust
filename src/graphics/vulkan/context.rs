@@ -19,6 +19,9 @@ pub struct VulkanContext {
 
 #[allow(dead_code)]
 impl VulkanContext {
+    /// # Safety
+    /// `window` must outlive the returned context — the surface is created
+    /// from its raw handles and is destroyed in `Drop`.
     pub unsafe fn new(window: &Window, validation_layers: bool) -> Result<Self> {
         let entry = Entry::linked();
         let display_handle = window.display_handle()?.as_raw();

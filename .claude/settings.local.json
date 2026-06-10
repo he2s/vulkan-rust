@@ -12,7 +12,10 @@
       "Read(//tmp/**)",
       "Bash(find:*)",
       "Bash(for:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\henni\\\\vulkan-rust\\\\shaders\" -Force | Select-Object Name; \"---\"; Get-ChildItem \"C:\\\\Users\\\\henni\\\\vulkan-rust\\\\doc\" -Force -Recurse | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\henni\\\\vulkan-rust\\\\.claude\" -Recurse -File | Select-Object @{n='Path';e={$_.FullName.Replace\\('C:\\\\Users\\\\henni\\\\vulkan-rust\\\\',''\\)}}, @{n='Size';e={$_.Length}}; \"---\"; Get-ChildItem \"C:\\\\Users\\\\henni\\\\vulkan-rust\\\\CLAUDE.md\" | Select-Object Name, Length)",
+      "PowerShell(cargo clippy *)"
     ],
     "deny": [],
     "ask": []

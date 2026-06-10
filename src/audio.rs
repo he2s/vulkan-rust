@@ -40,6 +40,7 @@ pub struct AudioState {
 
     fft_planner: FftPlanner<f32>,
     fft_cache: HashMap<usize, Arc<dyn Fft<f32>>>,
+    hann_cache: HashMap<usize, Arc<Vec<f32>>>,
 
     processing_buffer: Vec<Complex32>,
     windowing_buffer: Vec<f32>,
@@ -93,6 +94,12 @@ impl Default for AudioLevels {
     }
 }
 
+impl Default for AudioState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioState {
     pub fn new() -> Self {
         Self {
@@ -103,6 +110,7 @@ impl AudioState {
 
             fft_planner: FftPlanner::<f32>::new(),
             fft_cache: HashMap::with_capacity(8),
+            hann_cache: HashMap::with_capacity(8),
 
             processing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
             windowing_buffer: Vec::with_capacity(MAX_FFT_SIZE),
@@ -115,16 +123,6 @@ impl AudioState {
             samples_since_beat: 0,
             total_beats: 0,
             beats_per_bar: 4,
-        }
-    }
-
-    pub fn push_samples(&mut self, samples: &[f32], sample_rate: u32) {
-        self.last_sample_rate = sample_rate;
-        for &sample in samples {
-            if self.ring.len() == self.capacity {
-                self.ring.pop_front();
-            }
-            self.ring.push_back(sample);
         }
     }
 
@@ -212,11 +210,6 @@ impl AudioState {
         }
     }
 
-    /// Check if the audio system is in manual tempo mode (no automatic detection)
-    pub fn is_manual_tempo_mode(&self) -> bool {
-        self.beat_history.is_empty()
-    }
-
     pub fn analyze_and_get_levels(&mut self) -> AudioLevels {
         if self.ring.is_empty() {
             self.levels = AudioLevels::default();
@@ -285,7 +278,14 @@ impl AudioState {
             .next_power_of_two().clamp(MIN_FFT_SIZE, MAX_FFT_SIZE);
         self.windowing_buffer.resize(fft_len, 0.0);
 
-        Self::apply_hann_window(&mut self.windowing_buffer);
+        let window = Arc::clone(
+            self.hann_cache
+                .entry(fft_len)
+                .or_insert_with(|| Arc::new(compute_hann_window(fft_len)))
+        );
+        for (sample, &w) in self.windowing_buffer.iter_mut().zip(window.iter()) {
+            *sample *= w;
+        }
 
         let fft = Arc::clone(
             self.fft_cache
@@ -306,15 +306,6 @@ impl AudioState {
         self.analyze_frequency_bands(fft_len)
     }
 
-    fn apply_hann_window(buffer: &mut [f32]) {
-        let len = buffer.len();
-        let denom = (len.saturating_sub(1)).max(1) as f32;
-        for (i, sample) in buffer.iter_mut().enumerate() {
-            let n = i as f32;
-            let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * n / denom).cos());
-            *sample *= w;
-        }
-    }
 
     fn analyze_frequency_bands(&self, fft_len: usize) -> (f32, f32, f32) {
         let sample_rate = self.last_sample_rate as f32;
@@ -358,27 +349,52 @@ impl AudioState {
 
 
     pub fn push_audio_data(&mut self, data: &[f32], channels: usize, sample_rate: u32) {
-        if channels == 1 {
-            self.push_samples(data, sample_rate);
-        } else {
-            // Convert to mono and push directly to ring buffer to avoid borrow conflicts
-            self.last_sample_rate = sample_rate;
+        self.push_converted(data, channels, sample_rate, |&s| s);
+    }
 
-            let samples_len = data.len() / channels;
-            if samples_len == 0 {
-                return;
-            }
+    pub fn push_audio_data_i16(&mut self, data: &[i16], channels: usize, sample_rate: u32) {
+        self.push_converted(data, channels, sample_rate, |&s| s as f32 / 32768.0);
+    }
 
-            // Convert and push directly without intermediate buffer
-            for frame in data.chunks_exact(channels) {
-                let sample = frame.iter().sum::<f32>() / channels as f32;
+    pub fn push_audio_data_u16(&mut self, data: &[u16], channels: usize, sample_rate: u32) {
+        self.push_converted(data, channels, sample_rate, |&s| (s as f32 / 32768.0) - 1.0);
+    }
 
-                // Push directly to ring buffer (inlined from push_samples)
-                if self.ring.len() == self.capacity {
+    #[inline]
+    fn push_converted<S, F>(&mut self, data: &[S], channels: usize, sample_rate: u32, convert: F)
+    where
+        F: Fn(&S) -> f32,
+    {
+        self.last_sample_rate = sample_rate;
+        let cap = self.capacity;
+
+        if channels <= 1 {
+            for s in data {
+                if self.ring.len() == cap {
                     self.ring.pop_front();
                 }
-                self.ring.push_back(sample);
+                self.ring.push_back(convert(s));
             }
+            return;
+        }
+
+        let inv_ch = 1.0 / channels as f32;
+        for frame in data.chunks_exact(channels) {
+            let mut sum = 0.0f32;
+            for s in frame {
+                sum += convert(s);
+            }
+            if self.ring.len() == cap {
+                self.ring.pop_front();
+            }
+            self.ring.push_back(sum * inv_ch);
         }
     }
+}
+
+fn compute_hann_window(len: usize) -> Vec<f32> {
+    let denom = len.saturating_sub(1).max(1) as f32;
+    (0..len)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / denom).cos()))
+        .collect()
 }

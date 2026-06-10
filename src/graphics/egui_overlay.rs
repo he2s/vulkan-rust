@@ -39,10 +39,14 @@ pub struct EguiOverlay {
     vertex_buffer: Option<vk::Buffer>,
     vertex_buffer_memory: Option<vk::DeviceMemory>,
     vertex_buffer_size: vk::DeviceSize,
+    vertex_mapped_ptr: *mut u8,
 
     index_buffer: Option<vk::Buffer>,
     index_buffer_memory: Option<vk::DeviceMemory>,
     index_buffer_size: vk::DeviceSize,
+    index_mapped_ptr: *mut u8,
+
+    vertex_scratch: Vec<EguiVertex>,
 
     pipeline: Option<vk::Pipeline>,
     pipeline_layout: Option<vk::PipelineLayout>,
@@ -79,9 +83,12 @@ impl EguiOverlay {
             vertex_buffer: None,
             vertex_buffer_memory: None,
             vertex_buffer_size: 0,
+            vertex_mapped_ptr: std::ptr::null_mut(),
             index_buffer: None,
             index_buffer_memory: None,
             index_buffer_size: 0,
+            index_mapped_ptr: std::ptr::null_mut(),
+            vertex_scratch: Vec::new(),
             pipeline: None,
             pipeline_layout: None,
             descriptor_set_layout: None,
@@ -96,6 +103,10 @@ impl EguiOverlay {
     }
 
     /// Initialize Vulkan resources for rendering
+    ///
+    /// # Safety
+    /// `device` and `render_pass` must stay alive until `destroy` is called;
+    /// the overlay caches raw handles to both.
     pub unsafe fn init_vulkan(
         &mut self,
         instance: &ash::Instance,
@@ -272,19 +283,15 @@ impl EguiOverlay {
 
     fn compile_shader(path: &str, kind: shaderc::ShaderKind) -> Result<Vec<u32>> {
         let source = std::fs::read_to_string(path)?;
-        let compiler = shaderc::Compiler::new()
-            .ok_or_else(|| anyhow!("Failed to create shader compiler"))?;
-
-        let binary_result = compiler.compile_into_spirv(&source, kind, path, "main", None)?;
-        Ok(binary_result.as_binary().to_vec())
+        crate::graphics::shaders::compile_to_spirv(&source, kind, path)
     }
 
-    unsafe fn create_shader_module(device: &ash::Device, code: &[u32]) -> Result<vk::ShaderModule> {
+    unsafe fn create_shader_module(device: &ash::Device, code: &[u32]) -> Result<vk::ShaderModule> { unsafe {
         let create_info = vk::ShaderModuleCreateInfo::default().code(code);
         Ok(device.create_shader_module(&create_info, None)?)
-    }
+    }}
 
-    unsafe fn create_descriptor_pool(&mut self, device: &ash::Device) -> Result<()> {
+    unsafe fn create_descriptor_pool(&mut self, device: &ash::Device) -> Result<()> { unsafe {
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             descriptor_count: 100,
@@ -297,7 +304,7 @@ impl EguiOverlay {
         let pool = device.create_descriptor_pool(&pool_info, None)?;
         self.descriptor_pool = Some(pool);
         Ok(())
-    }
+    }}
 
     unsafe fn upload_font_texture(
         &mut self,
@@ -306,7 +313,7 @@ impl EguiOverlay {
         physical_device: vk::PhysicalDevice,
         command_pool: vk::CommandPool,
         queue: vk::Queue,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         let font_image = self.egui_ctx.fonts(|fonts| fonts.image());
 
         let width = font_image.width();
@@ -330,7 +337,7 @@ impl EguiOverlay {
         )?;
 
         Ok(())
-    }
+    }}
 
     unsafe fn create_texture(
         &mut self,
@@ -343,7 +350,7 @@ impl EguiOverlay {
         pixels: &[u8],
         width: usize,
         height: usize,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         let image_size = (width * height * 4) as vk::DeviceSize;
 
         // Create staging buffer
@@ -492,9 +499,14 @@ impl EguiOverlay {
         );
 
         Ok(())
-    }
+    }}
 
     /// Render egui overlay
+    ///
+    /// # Safety
+    /// `cmd_buffer` must be in the recording state inside a render pass
+    /// compatible with the one passed to `init_vulkan`, and externally
+    /// synchronised (no other thread recording to it).
     pub unsafe fn render(
         &mut self,
         instance: &ash::Instance,
@@ -503,7 +515,7 @@ impl EguiOverlay {
         cmd_buffer: vk::CommandBuffer,
         extent: vk::Extent2D,
         clipped_primitives: &[egui::ClippedPrimitive],
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         if clipped_primitives.is_empty() {
             return Ok(());
         }
@@ -618,7 +630,7 @@ impl EguiOverlay {
         }
 
         Ok(())
-    }
+    }}
 
     unsafe fn update_vertex_buffer(
         &mut self,
@@ -626,19 +638,27 @@ impl EguiOverlay {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         vertices: &[egui::epaint::Vertex],
-    ) -> Result<()> {
-        let converted_vertices: Vec<EguiVertex> = vertices
-            .iter()
-            .map(|v| EguiVertex {
-                pos: [v.pos.x, v.pos.y],
-                uv: [v.uv.x, v.uv.y],
-                color: [v.color.r(), v.color.g(), v.color.b(), v.color.a()],
-            })
-            .collect();
+    ) -> Result<()> { unsafe {
+        self.vertex_scratch.clear();
+        self.vertex_scratch.reserve(vertices.len());
+        self.vertex_scratch.extend(vertices.iter().map(|v| EguiVertex {
+            pos: [v.pos.x, v.pos.y],
+            uv: [v.uv.x, v.uv.y],
+            color: [v.color.r(), v.color.g(), v.color.b(), v.color.a()],
+        }));
 
-        let buffer_size = (std::mem::size_of::<EguiVertex>() * converted_vertices.len()) as vk::DeviceSize;
+        let buffer_size = (std::mem::size_of::<EguiVertex>() * self.vertex_scratch.len()) as vk::DeviceSize;
+        if buffer_size == 0 {
+            return Ok(());
+        }
 
         if buffer_size > self.vertex_buffer_size {
+            if !self.vertex_mapped_ptr.is_null() {
+                if let Some(memory) = self.vertex_buffer_memory {
+                    device.unmap_memory(memory);
+                }
+                self.vertex_mapped_ptr = std::ptr::null_mut();
+            }
             if let Some(buffer) = self.vertex_buffer.take() {
                 device.destroy_buffer(buffer, None);
             }
@@ -646,29 +666,34 @@ impl EguiOverlay {
                 device.free_memory(memory, None);
             }
 
+            let new_size = buffer_size.max(self.vertex_buffer_size * 2);
             let (buffer, memory) = self.create_buffer(
                 instance,
                 device,
                 physical_device,
-                buffer_size,
+                new_size,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
+            // SAFETY: memory is HOST_VISIBLE | HOST_COHERENT; the mapped pointer is valid
+            // until the memory is freed (we unmap above before any realloc).
+            let ptr = device.map_memory(memory, 0, new_size, vk::MemoryMapFlags::empty())?;
+
             self.vertex_buffer = Some(buffer);
             self.vertex_buffer_memory = Some(memory);
-            self.vertex_buffer_size = buffer_size;
+            self.vertex_buffer_size = new_size;
+            self.vertex_mapped_ptr = ptr as *mut u8;
         }
 
-        let vertex_buffer_memory = self.vertex_buffer_memory
-            .ok_or_else(|| anyhow!("Vertex buffer memory not allocated"))?;
-
-        let ptr = device.map_memory(vertex_buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())?;
-        std::ptr::copy_nonoverlapping(converted_vertices.as_ptr(), ptr as *mut EguiVertex, converted_vertices.len());
-        device.unmap_memory(vertex_buffer_memory);
+        std::ptr::copy_nonoverlapping(
+            self.vertex_scratch.as_ptr() as *const u8,
+            self.vertex_mapped_ptr,
+            buffer_size as usize,
+        );
 
         Ok(())
-    }
+    }}
 
     unsafe fn update_index_buffer(
         &mut self,
@@ -676,10 +701,19 @@ impl EguiOverlay {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         indices: &[u32],
-    ) -> Result<()> {
-        let buffer_size = (std::mem::size_of::<u32>() * indices.len()) as vk::DeviceSize;
+    ) -> Result<()> { unsafe {
+        let buffer_size = std::mem::size_of_val(indices) as vk::DeviceSize;
+        if buffer_size == 0 {
+            return Ok(());
+        }
 
         if buffer_size > self.index_buffer_size {
+            if !self.index_mapped_ptr.is_null() {
+                if let Some(memory) = self.index_buffer_memory {
+                    device.unmap_memory(memory);
+                }
+                self.index_mapped_ptr = std::ptr::null_mut();
+            }
             if let Some(buffer) = self.index_buffer.take() {
                 device.destroy_buffer(buffer, None);
             }
@@ -687,29 +721,32 @@ impl EguiOverlay {
                 device.free_memory(memory, None);
             }
 
+            let new_size = buffer_size.max(self.index_buffer_size * 2);
             let (buffer, memory) = self.create_buffer(
                 instance,
                 device,
                 physical_device,
-                buffer_size,
+                new_size,
                 vk::BufferUsageFlags::INDEX_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
+            let ptr = device.map_memory(memory, 0, new_size, vk::MemoryMapFlags::empty())?;
+
             self.index_buffer = Some(buffer);
             self.index_buffer_memory = Some(memory);
-            self.index_buffer_size = buffer_size;
+            self.index_buffer_size = new_size;
+            self.index_mapped_ptr = ptr as *mut u8;
         }
 
-        let index_buffer_memory = self.index_buffer_memory
-            .ok_or_else(|| anyhow!("Index buffer memory not allocated"))?;
-
-        let ptr = device.map_memory(index_buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())?;
-        std::ptr::copy_nonoverlapping(indices.as_ptr(), ptr as *mut u32, indices.len());
-        device.unmap_memory(index_buffer_memory);
+        std::ptr::copy_nonoverlapping(
+            indices.as_ptr() as *const u8,
+            self.index_mapped_ptr,
+            buffer_size as usize,
+        );
 
         Ok(())
-    }
+    }}
 
     // Helper functions
     unsafe fn create_buffer(
@@ -720,7 +757,7 @@ impl EguiOverlay {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+    ) -> Result<(vk::Buffer, vk::DeviceMemory)> { unsafe {
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
@@ -738,7 +775,7 @@ impl EguiOverlay {
         device.bind_buffer_memory(buffer, memory, 0)?;
 
         Ok((buffer, memory))
-    }
+    }}
 
     fn find_memory_type(
         instance: &ash::Instance,
@@ -765,7 +802,7 @@ impl EguiOverlay {
         image: vk::Image,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         let cmd_buffer = self.begin_single_time_commands(device, command_pool)?;
 
         let (src_access_mask, dst_access_mask, src_stage, dst_stage) = match (old_layout, new_layout) {
@@ -804,7 +841,7 @@ impl EguiOverlay {
 
         self.end_single_time_commands(device, command_pool, queue, cmd_buffer)?;
         Ok(())
-    }
+    }}
 
     unsafe fn copy_buffer_to_image(
         &self,
@@ -815,7 +852,7 @@ impl EguiOverlay {
         image: vk::Image,
         width: u32,
         height: u32,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         let cmd_buffer = self.begin_single_time_commands(device, command_pool)?;
 
         let region = vk::BufferImageCopy::default()
@@ -835,9 +872,9 @@ impl EguiOverlay {
 
         self.end_single_time_commands(device, command_pool, queue, cmd_buffer)?;
         Ok(())
-    }
+    }}
 
-    unsafe fn begin_single_time_commands(&self, device: &ash::Device, command_pool: vk::CommandPool) -> Result<vk::CommandBuffer> {
+    unsafe fn begin_single_time_commands(&self, device: &ash::Device, command_pool: vk::CommandPool) -> Result<vk::CommandBuffer> { unsafe {
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -850,7 +887,7 @@ impl EguiOverlay {
 
         device.begin_command_buffer(cmd_buffer, &begin_info)?;
         Ok(cmd_buffer)
-    }
+    }}
 
     unsafe fn end_single_time_commands(
         &self,
@@ -858,7 +895,7 @@ impl EguiOverlay {
         command_pool: vk::CommandPool,
         queue: vk::Queue,
         cmd_buffer: vk::CommandBuffer,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         device.end_command_buffer(cmd_buffer)?;
 
         let cmd_buffers = [cmd_buffer];
@@ -871,7 +908,7 @@ impl EguiOverlay {
         device.free_command_buffers(command_pool, &cmd_buffers);
 
         Ok(())
-    }
+    }}
 
     pub fn handle_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         let response = self.egui_winit.on_window_event(window, event);
@@ -910,7 +947,22 @@ impl EguiOverlay {
         self.show_overlay = !self.show_overlay;
     }
 
-    pub unsafe fn destroy(&mut self, device: &ash::Device) {
+    /// # Safety
+    /// `device` must be the device passed to `init_vulkan`, and no submitted
+    /// GPU work may still use the overlay's resources (`device_wait_idle` first).
+    pub unsafe fn destroy(&mut self, device: &ash::Device) { unsafe {
+        if !self.vertex_mapped_ptr.is_null() {
+            if let Some(memory) = self.vertex_buffer_memory {
+                device.unmap_memory(memory);
+            }
+            self.vertex_mapped_ptr = std::ptr::null_mut();
+        }
+        if !self.index_mapped_ptr.is_null() {
+            if let Some(memory) = self.index_buffer_memory {
+                device.unmap_memory(memory);
+            }
+            self.index_mapped_ptr = std::ptr::null_mut();
+        }
         if let Some(buffer) = self.vertex_buffer.take() {
             device.destroy_buffer(buffer, None);
         }
@@ -943,5 +995,5 @@ impl EguiOverlay {
         if let Some(pool) = self.descriptor_pool.take() {
             device.destroy_descriptor_pool(pool, None);
         }
-    }
+    }}
 }

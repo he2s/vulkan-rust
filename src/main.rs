@@ -1,27 +1,12 @@
-// ============================================================================
-// MODULAR ARCHITECTURE
-// Refactored into clean module structure for better performance and maintainability
-// ============================================================================
-
-// Module declarations
-mod audio;
-mod config;
-mod gfx;
-mod graphics;
-mod input;
-mod processing;
-mod state;
-mod utils;
-
-// Core application imports
-use crate::config::config::{
+use vulkan_rust::config::config::{
     Args, Config,
     load_or_create_config, print_startup_info,
 };
-use crate::gfx::Gfx;
-use crate::graphics::PushConstants;
-use crate::input::InputManager;
-use crate::utils::DeviceLister;
+use vulkan_rust::gfx::Gfx;
+use vulkan_rust::graphics::PushConstants;
+use vulkan_rust::graphics::egui_overlay::EguiOverlay;
+use vulkan_rust::input::InputManager;
+use vulkan_rust::utils::DeviceLister;
 
 // External crate imports
 use anyhow::Result;
@@ -38,36 +23,14 @@ use winit::{
     window::{Fullscreen, Window},
 };
 
-// ============================================================================
-// CORE TYPES AND CONSTANTS
-// This section contains fundamental constants and data structures used throughout the application
-// These will remain here as they're shared across multiple modules
-// ============================================================================
-
-// constants
 const FRAME_TIME_VSYNC: Duration = Duration::from_millis(16);
 const FRAME_TIME_NO_VSYNC: Duration = Duration::from_millis(1);
 
-// state management
-// FrameState moved to state::FrameState
 
-
-
-
-
-
-
-
-// ============================================================================
-// APPLICATION MODULE
-// This section contains the main application structure and window event handling
-// ============================================================================
-
-// main app
 pub struct App {
     window: Option<Window>,
     gfx: Option<Gfx>,
-    overlay: Option<crate::graphics::egui_overlay::EguiOverlay>,
+    overlay: Option<EguiOverlay>,
     start_time: Option<Instant>,
     mouse_pos: (f64, f64),
     mouse_pressed: bool,
@@ -85,6 +48,8 @@ pub struct App {
     manual_bpm: Option<f32>,
     manual_tempo_mode: bool,
     last_tap_display: Option<Instant>,
+
+    last_title_state: Option<(u32, bool)>,
 }
 
 impl App {
@@ -129,6 +94,8 @@ impl App {
             manual_bpm: None,
             manual_tempo_mode: false,
             last_tap_display: None,
+
+            last_title_state: None,
         }
     }
 
@@ -157,10 +124,10 @@ impl App {
     fn toggle_fullscreen(&mut self) {
         if let Some(window) = &self.window {
             // Wait for all Vulkan operations to complete before changing window state
-            if let Some(gfx) = &self.gfx {
-                if let Err(e) = unsafe { gfx.context.device.device_wait_idle() } {
-                    eprintln!("Warning: Failed to wait for device idle before fullscreen toggle: {e}");
-                }
+            if let Some(gfx) = &self.gfx
+                && let Err(e) = unsafe { gfx.context.device.device_wait_idle() }
+            {
+                eprintln!("Warning: Failed to wait for device idle before fullscreen toggle: {e}");
             }
 
             self.is_fullscreen = !self.is_fullscreen;
@@ -280,47 +247,12 @@ impl App {
 
     fn get_push_constants(&mut self, elapsed: f32, w: u32, h: u32) -> PushConstants {
         let frame_state = self.input_manager.get_frame_state();
-
-        let note_velocity = if frame_state.midi.note_count > 0 {
-            frame_state.midi.notes[frame_state.midi.last_note as usize]
-        } else {
-            0.0
-        };
-
-        let blended_velocity = note_velocity.max(frame_state.audio_levels.level_rms);
-        let blended_pitch_bend = frame_state
-            .midi
-            .pitch_bend
-            .max(frame_state.audio_levels.low * 2.0 - 1.0);
-        let blended_cc1 = frame_state.midi.controllers[1].max(frame_state.audio_levels.mid);
-        let blended_cc74 = frame_state.midi.controllers[74].max(frame_state.audio_levels.high);
-
-        PushConstants {
-            time: elapsed,
-            mouse_x: self.mouse_pos.0 as u32,
-            mouse_y: self.mouse_pos.1 as u32,
-            mouse_pressed: if self.mouse_pressed { 1 } else { 0 },
-            note_velocity: blended_velocity,
-            pitch_bend: blended_pitch_bend,
-            cc1: blended_cc1,
-            cc74: blended_cc74,
-            note_count: frame_state.midi.note_count,
-            last_note: frame_state.midi.last_note as u32,
-            osc_ch1: frame_state.osc.channel1,
-            osc_ch2: frame_state.osc.channel2,
-            render_w: w,
-            render_h: h,
-            bpm: frame_state.beat.bpm,
-            time_to_next_beat: frame_state.beat.time_to_next_beat,
-            time_since_last_beat: frame_state.beat.time_since_last_beat,
-            beats_per_bar: frame_state.beat.beats_per_bar,
-            max_points: 50000,
-            fft_size: 1024, // Could be configurable
-            audio_intensity: frame_state.audio_levels.level_rms,
-            bass_level: frame_state.audio_levels.low,
-            mid_level: frame_state.audio_levels.mid,
-            high_level: frame_state.audio_levels.high,
-        }
+        PushConstants::from_frame(
+            &frame_state,
+            elapsed,
+            (self.mouse_pos.0 as u32, self.mouse_pos.1 as u32, self.mouse_pressed),
+            (w, h),
+        )
     }
 
     fn print_controls(&self) {
@@ -336,35 +268,36 @@ impl App {
     }
 
     fn update_window_title(&mut self) {
-        // Only update title every 30 frames (~0.5 seconds at 60fps) to avoid spam
         if !self.frame_count_since_log.is_multiple_of(30) {
             return;
         }
 
-        if let Some(window) = &self.window {
-            let frame_state = self.input_manager.get_frame_state();
-            let base_title = &self.config.window.title;
-            let bpm = frame_state.beat.bpm;
+        let Some(window) = &self.window else { return };
 
-            let title = if self.manual_tempo_mode {
-                format!("{} - {:.1} BPM (Manual)", base_title, bpm)
-            } else {
-                format!("{} - {:.1} BPM (Auto)", base_title, bpm)
-            };
-
-            window.set_title(&title);
+        let bpm = self.input_manager.get_frame_state().beat.bpm;
+        let bucket = (bpm * 10.0).round() as u32;
+        let state = (bucket, self.manual_tempo_mode);
+        if self.last_title_state == Some(state) {
+            return;
         }
+        self.last_title_state = Some(state);
+
+        let mode = if self.manual_tempo_mode { "Manual" } else { "Auto" };
+        let title = format!("{} - {:.1} BPM ({})", self.config.window.title, bpm, mode);
+        window.set_title(&title);
     }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
-        // Clean up egui before Vulkan context is destroyed
+        // egui depends on gfx; tear down first
         if let (Some(overlay), Some(gfx)) = (&mut self.overlay, &self.gfx) {
-            unsafe {
-                overlay.destroy(&gfx.context.device);
-            }
+            unsafe { overlay.destroy(&gfx.context.device); }
         }
+        // Drop gfx (and its Vulkan surface) while the window is still alive.
+        // Otherwise field-drop order (window → gfx) would destroy the surface
+        // after winit has invalidated the HWND, causing STATUS_ACCESS_VIOLATION.
+        drop(self.gfx.take());
     }
 }
 
@@ -396,7 +329,7 @@ impl ApplicationHandler for App {
                 .expect("Failed to initialize Vulkan")
         };
 
-        let mut overlay = crate::graphics::egui_overlay::EguiOverlay::new(&window)
+        let mut overlay = EguiOverlay::new(&window)
             .expect("Failed to initialize egui overlay");
 
         // Initialize egui Vulkan resources
@@ -506,40 +439,35 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.update_fps_tracking();
                 self.update_window_title();
-                if let Some(start_time) = &self.start_time {
-                    let elapsed = start_time.elapsed().as_secs_f32();
-                    // Use cached window size to avoid system call
-                    let (width, height) = self.cached_window_size;
-                    let push_constants =
-                        self.get_push_constants(elapsed, width.max(1), height.max(1));
 
-                    // Update egui overlay and get primitives
-                    let egui_primitives = if let (Some(window), Some(overlay)) = (&self.window, &mut self.overlay) {
-                        let current_preset = &self.shader_presets[self.current_shader_index];
-                        let (_output, primitives) = overlay.run_ui(window, current_preset);
+                let Some(start_time) = self.start_time else { return };
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let (width, height) = self.cached_window_size;
+                let push_constants = self.get_push_constants(elapsed, width.max(1), height.max(1));
+
+                let egui_primitives = match (&self.window, &mut self.overlay) {
+                    (Some(window), Some(overlay)) => {
+                        let preset = &self.shader_presets[self.current_shader_index];
+                        let (_, primitives) = overlay.run_ui(window, preset);
                         Some(primitives)
-                    } else {
-                        None
-                    };
+                    }
+                    _ => None,
+                };
 
-                    if let Some(gfx) = &mut self.gfx {
-                        match unsafe { gfx.draw(&push_constants, egui_primitives.as_ref(), self.overlay.as_mut()) } {
-                            Ok(true) => {
-                                // Swapchain needs recreation
-                                if let Some(window) = &self.window
-                                    && let Err(e) = unsafe { gfx.recreate_swapchain(window) } {
-                                        eprintln!("Failed to recreate swapchain: {e}");
-                                        event_loop.exit();
-                                    }
-                            }
-                            Ok(false) => {
-                                // Draw succeeded normally
-                            }
-                            Err(e) => {
-                                eprintln!("Draw error: {e}");
-                                event_loop.exit();
-                            }
+                let Some(gfx) = &mut self.gfx else { return };
+                match unsafe { gfx.draw(&push_constants, egui_primitives.as_ref(), self.overlay.as_mut()) } {
+                    Ok(true) => {
+                        if let Some(window) = &self.window
+                            && let Err(e) = unsafe { gfx.recreate_swapchain(window) }
+                        {
+                            eprintln!("Failed to recreate swapchain: {e}");
+                            event_loop.exit();
                         }
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("Draw error: {e}");
+                        event_loop.exit();
                     }
                 }
             }
@@ -562,12 +490,6 @@ impl ApplicationHandler for App {
     }
 }
 
-// ============================================================================
-// MAIN FUNCTION
-// This is the application entry point and will remain here
-// ============================================================================
-
-// main
 fn main() -> Result<()> {
     env_logger::init();
 

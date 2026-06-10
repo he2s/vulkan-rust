@@ -58,7 +58,6 @@ impl MidiState {
     }
 
     #[inline(always)]
-    #[allow(dead_code)]
     pub fn get_controller(&self, index: usize) -> f32 {
         debug_assert!(index < MAX_CONTROLLERS);
         unsafe {
@@ -152,6 +151,12 @@ impl MidiState {
 pub struct MidiManager {
     state: Arc<MidiState>,
     connection: Option<MidiInputConnection<()>>,
+}
+
+impl Default for MidiManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MidiManager {
@@ -277,10 +282,11 @@ fn handle_message_optimized(state: &MidiState, msg: &[u8]) {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct MidiStateSnapshot {
-    pub notes: [f32; MAX_NOTES],
-    pub controllers: [f32; MAX_CONTROLLERS],
+    pub note_velocity: f32,
+    pub cc1: f32,
+    pub cc74: f32,
     pub pitch_bend: f32,
     pub last_note: u8,
     pub note_count: u32,
@@ -288,36 +294,15 @@ pub struct MidiStateSnapshot {
 
 impl MidiState {
     pub fn snapshot(&self) -> MidiStateSnapshot {
-        let mut notes = [0.0f32; MAX_NOTES];
-        let mut controllers = [0.5f32; MAX_CONTROLLERS];
-
-        for chunk in 0..(MAX_NOTES / 8) {
-            let base = chunk * 8;
-            for i in 0..8 {
-                notes[base + i] = f32::from_bits(self.notes[base + i].load(Ordering::Relaxed));
-            }
-        }
-
-        for chunk in 0..(MAX_CONTROLLERS / 8) {
-            let base = chunk * 8;
-            for i in 0..8 {
-                controllers[base + i] =
-                    f32::from_bits(self.controllers[base + i].load(Ordering::Relaxed));
-            }
-        }
-
+        let last_note = self.get_last_note();
         MidiStateSnapshot {
-            notes,
-            controllers,
+            note_velocity: self.get_note(last_note as usize),
+            cc1: self.get_controller(1),
+            cc74: self.get_controller(74),
             pitch_bend: self.get_pitch_bend(),
-            last_note: self.get_last_note(),
+            last_note,
             note_count: self.get_note_count(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn clone_values(&self) -> MidiStateSnapshot {
-        self.snapshot()
     }
 }
 

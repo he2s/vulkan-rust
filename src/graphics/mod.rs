@@ -1,9 +1,6 @@
-// Core graphics module - contains type definitions used by main.rs
 pub mod vulkan;
 pub mod shaders;
-pub mod renderer;
 pub mod egui_overlay;
-pub mod overlay;
 
 // Re-export Vulkan types for convenience
 pub use vulkan::{VulkanContext, VulkanSwapchain, VulkanBuffers};
@@ -78,6 +75,48 @@ pub struct PointData {
     pub rotation: f32,
     pub point_type: u32,
     pub velocity: [f32; 2],
+}
+
+impl PushConstants {
+    pub fn from_frame(
+        frame: &crate::state::FrameState,
+        time: f32,
+        mouse: (u32, u32, bool),
+        size: (u32, u32),
+    ) -> Self {
+        let m = &frame.midi;
+        let a = &frame.audio_levels;
+        let b = &frame.beat;
+
+        let note_velocity = if m.note_count > 0 { m.note_velocity } else { 0.0 };
+
+        Self {
+            time,
+            mouse_x: mouse.0,
+            mouse_y: mouse.1,
+            mouse_pressed: mouse.2 as u32,
+            note_velocity: note_velocity.max(a.level_rms),
+            pitch_bend: m.pitch_bend.max(a.low * 2.0 - 1.0),
+            cc1: m.cc1.max(a.mid),
+            cc74: m.cc74.max(a.high),
+            note_count: m.note_count,
+            last_note: m.last_note as u32,
+            osc_ch1: frame.osc.channel1,
+            osc_ch2: frame.osc.channel2,
+            render_w: size.0,
+            render_h: size.1,
+            bpm: b.bpm,
+            time_to_next_beat: b.time_to_next_beat,
+            time_since_last_beat: b.time_since_last_beat,
+            beats_per_bar: b.beats_per_bar,
+            max_points: 50000,
+            fft_size: 1024,
+            audio_intensity: a.level_rms,
+            bass_level: a.low,
+            mid_level: a.mid,
+            high_level: a.high,
+        }
+    }
 }
 
 impl Default for PushConstants {

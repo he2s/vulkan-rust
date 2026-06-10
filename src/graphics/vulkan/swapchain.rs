@@ -15,6 +15,9 @@ pub struct VulkanSwapchain {
 
 #[allow(dead_code)]
 impl VulkanSwapchain {
+    /// # Safety
+    /// `context` must hold a live device and surface; the returned swapchain
+    /// must be `cleanup`'d before the device is destroyed.
     pub unsafe fn new(context: &VulkanContext, window: &Window, vsync: bool) -> Result<Self> {
         let loader = swapchain::Device::new(&context.instance, &context.device);
         let surface_caps = unsafe { context
@@ -149,6 +152,9 @@ impl VulkanSwapchain {
             .collect()
     }
 
+    /// # Safety
+    /// `device` must be the device this swapchain was created on, and no GPU
+    /// work may still reference the swapchain images (`device_wait_idle` first).
     pub unsafe fn cleanup(&mut self, device: &ash::Device) {
         for &view in &self.views {
             unsafe { device.destroy_image_view(view, None) };

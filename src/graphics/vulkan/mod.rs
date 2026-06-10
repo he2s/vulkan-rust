@@ -1,16 +1,9 @@
 pub mod context;
 pub mod swapchain;
-pub mod pipeline;
-pub mod commands;
-pub mod sync;
 
-// Re-export Vulkan types for easy access
 pub use context::VulkanContext;
 pub use swapchain::VulkanSwapchain;
 
-// VulkanBuffers is defined in this file below
-
-// Re-export common Vulkan buffers
 use anyhow::Result;
 use ash::vk;
 use super::{Vertex, InstanceData};
@@ -34,6 +27,9 @@ pub struct VulkanBuffers {
 }
 
 impl VulkanBuffers {
+    /// # Safety
+    /// `context` must hold a live device; the returned buffers must be
+    /// destroyed before the device.
     pub unsafe fn new(context: &VulkanContext) -> Result<Self> {
         let vertex_data = [
             Vertex { pos: [-1.0, -1.0], uv: [0.0, 0.0] },
@@ -107,7 +103,7 @@ impl VulkanBuffers {
         physical_device: vk::PhysicalDevice,
         data: &[Vertex],
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer_size = (std::mem::size_of::<Vertex>() * data.len()) as vk::DeviceSize;
+        let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
         let buffer_info = vk::BufferCreateInfo {
             size: buffer_size,
@@ -149,7 +145,7 @@ impl VulkanBuffers {
         physical_device: vk::PhysicalDevice,
         data: &[InstanceData],
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer_size = (std::mem::size_of::<InstanceData>() * data.len()) as vk::DeviceSize;
+        let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
         let buffer_info = vk::BufferCreateInfo {
             size: buffer_size,
@@ -225,7 +221,7 @@ impl VulkanBuffers {
         physical_device: vk::PhysicalDevice,
         data: &[u16],
     ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer_size = (std::mem::size_of::<u16>() * data.len()) as vk::DeviceSize;
+        let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
         let buffer_info = vk::BufferCreateInfo {
             size: buffer_size,
